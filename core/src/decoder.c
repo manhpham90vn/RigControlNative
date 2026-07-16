@@ -18,17 +18,41 @@ struct rc_decoder {
     AVCodecContext *ctx;
     AVPacket *pkt;
     AVFrame *frame;
-    AVFrame *sw_frame;       /* đích hwdownload khi decode VAAPI */
-    AVBufferRef *hw_ctx;     /* device context VAAPI; NULL = software */
-    int emitted_unsupported; /* để không spam log format lạ */
+    AVFrame *sw_frame;             /* đích hwdownload khi decode hw */
+    AVBufferRef *hw_ctx;           /* device context hw; NULL = software */
+    enum AVPixelFormat hw_pix_fmt; /* pix fmt hw tương ứng (VAAPI/CUDA); NONE nếu sw */
+    int emitted_unsupported;       /* để không spam log format lạ */
 };
 
-/* get_format callback: chọn VAAPI nếu decoder đề nghị, ngược lại format sw đầu tiên. */
-static enum AVPixelFormat pick_vaapi_format(AVCodecContext *ctx,
-                                            const enum AVPixelFormat *fmts) {
-    (void)ctx;
+/* Các backend hw decode thử theo thứ tự: VAAPI (Intel/AMD) rồi CUDA/NVDEC (NVIDIA). */
+static const struct {
+    enum AVHWDeviceType type;
+    enum AVPixelFormat pix_fmt;
+} HW_KINDS[] = {
+    {AV_HWDEVICE_TYPE_VAAPI, AV_PIX_FMT_VAAPI},
+    {AV_HWDEVICE_TYPE_CUDA, AV_PIX_FMT_CUDA},
+};
+
+static AVBufferRef *try_hw_device(enum AVHWDeviceType type) {
+    AVBufferRef *ref = NULL;
+    if (av_hwdevice_ctx_create(&ref, type, NULL, NULL, 0) == 0) return ref;
+    if (type == AV_HWDEVICE_TYPE_VAAPI) {
+        /* Máy nhiều GPU: node mặc định có thể là GPU không có VAAPI (vd NVIDIA) → thử
+         * lần lượt từng render node để tìm iGPU/GPU có driver VAAPI. */
+        for (int i = 128; i < 132; i++) {
+            char node[32];
+            snprintf(node, sizeof node, "/dev/dri/renderD%d", i);
+            if (av_hwdevice_ctx_create(&ref, type, node, NULL, 0) == 0) return ref;
+        }
+    }
+    return NULL;
+}
+
+/* get_format callback: chọn pix fmt hw của backend đã mở, ngược lại format sw đầu tiên. */
+static enum AVPixelFormat pick_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *fmts) {
+    const rc_decoder *d = ctx->opaque;
     for (const enum AVPixelFormat *p = fmts; *p != AV_PIX_FMT_NONE; p++)
-        if (*p == AV_PIX_FMT_VAAPI) return *p;
+        if (*p == d->hw_pix_fmt) return *p;
     return fmts[0];
 }
 
@@ -59,10 +83,19 @@ rc_decoder *rc_decoder_create(rc_codec codec, int hw) {
     d->ctx->flags2 |= AV_CODEC_FLAG2_FAST;
     d->ctx->thread_count = 1;
 
-    /* Thử VAAPI nếu được yêu cầu; máy không có VAAPI → im lặng dùng software. */
-    if (hw && av_hwdevice_ctx_create(&d->hw_ctx, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0) == 0) {
-        d->ctx->hw_device_ctx = av_buffer_ref(d->hw_ctx);
-        d->ctx->get_format = pick_vaapi_format;
+    /* Thử từng backend hw nếu được yêu cầu; không có → im lặng dùng software. */
+    d->hw_pix_fmt = AV_PIX_FMT_NONE;
+    if (hw) {
+        for (size_t k = 0; k < sizeof HW_KINDS / sizeof HW_KINDS[0]; k++) {
+            d->hw_ctx = try_hw_device(HW_KINDS[k].type);
+            if (d->hw_ctx) {
+                d->hw_pix_fmt = HW_KINDS[k].pix_fmt;
+                d->ctx->hw_device_ctx = av_buffer_ref(d->hw_ctx);
+                d->ctx->opaque = d;
+                d->ctx->get_format = pick_hw_format;
+                break;
+            }
+        }
     }
 
     if (avcodec_open2(d->ctx, dec, NULL) < 0) goto fail;
@@ -81,6 +114,11 @@ fail:
 
 int rc_decoder_is_hw(const rc_decoder *d) {
     return d && d->hw_ctx != NULL;
+}
+
+const char *rc_decoder_hw_name(const rc_decoder *d) {
+    if (!d || !d->hw_ctx) return NULL;
+    return av_hwdevice_get_type_name(((AVHWDeviceContext *)d->hw_ctx->data)->type);
 }
 
 void rc_decoder_destroy(rc_decoder *d) {
@@ -125,9 +163,9 @@ rc_status rc_decoder_feed(rc_decoder *d, const uint8_t *data, size_t len, int is
         if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) break;
         if (r < 0) return RC_ERR_DECODE;
 
-        /* Frame VAAPI nằm trên GPU → download về CPU (thường NV12). Zero-copy dmabuf: phase sau. */
+        /* Frame hw (VAAPI/CUDA) nằm trên GPU → download về CPU (NV12). Zero-copy: phase sau. */
         AVFrame *out = d->frame;
-        if (d->frame->format == AV_PIX_FMT_VAAPI) {
+        if (d->hw_ctx && d->frame->format == d->hw_pix_fmt) {
             av_frame_unref(d->sw_frame);
             if (av_hwframe_transfer_data(d->sw_frame, d->frame, 0) < 0) {
                 av_frame_unref(d->frame);

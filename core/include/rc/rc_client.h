@@ -62,7 +62,7 @@ typedef struct {
     int control;   /* != 0 để bật kênh điều khiển chuột/bàn phím */
     int audio;     /* != 0 để stream + phát audio thiết bị */
     rc_acodec audio_codec;
-    int hw_decode; /* != 0 → thử hardware decode (VAAPI); tự fallback software */
+    int hw_decode; /* != 0 → thử hardware decode (VAAPI → CUDA/NVDEC); tự fallback software */
 } rc_config;
 
 /* ---- Frame giải mã giao cho UI ----

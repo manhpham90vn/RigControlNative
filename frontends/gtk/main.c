@@ -11,7 +11,7 @@
  *   RC_AUDIO      0/1 (mặc định 0)
  *   RC_CONTROL    0/1 (mặc định 1; 0 = view-only)
  *   RC_SHOW_FPS   0/1 (mặc định 1) — overlay FPS trên video
- *   RC_HWDEC      0/1 (mặc định 0) — hardware decode VAAPI (tự fallback software)
+ *   RC_HWDEC      0/1 (mặc định 0) — hardware decode VAAPI/NVDEC (tự fallback software)
  *   RC_SERVER_PATH  đường dẫn jar server (libcore đọc; mặc định "server/rc-server")
  */
 #include "rcgtk.h"

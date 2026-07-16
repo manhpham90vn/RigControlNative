@@ -32,26 +32,56 @@ public final class ScreenEncoder {
 
     private final Options options;
 
-    private final int deviceWidth;
-    private final int deviceHeight;
-    private final int encWidth;
-    private final int encHeight;
-    private final int layerStack;
+    /* Không final: đọc lại khi màn hình xoay (streamTo tự reset encoder). */
+    private int deviceWidth;
+    private int deviceHeight;
+    private int encWidth;
+    private int encHeight;
+    private int layerStack;
 
     public ScreenEncoder(Options options) {
         this.options = options;
+        configure();
+    }
+
+    /** Đọc DisplayInfo hiện tại và tính kích thước encode; gọi lại sau khi xoay màn hình. */
+    private void configure() {
         DisplayInfo info = DisplayManager.create().getDisplayInfo(DISPLAY_ID);
         if (info == null) {
             throw new RuntimeException("không lấy được DisplayInfo cho display " + DISPLAY_ID);
         }
-        this.deviceWidth = info.width;
-        this.deviceHeight = info.height;
-        this.layerStack = info.layerStack;
+        deviceWidth = info.width;
+        deviceHeight = info.height;
+        layerStack = info.layerStack;
         int[] size = computeVideoSize(info.width, info.height, options.maxSize);
-        this.encWidth = size[0];
-        this.encHeight = size[1];
+        encWidth = size[0];
+        encHeight = size[1];
         System.out.println("[rc-server] display " + deviceWidth + "x" + deviceHeight
             + " -> encode " + encWidth + "x" + encHeight);
+    }
+
+    /** MIME theo options.codec (h264/h265/av1). */
+    private String mime() {
+        switch (options.codec) {
+            case "h265":
+                return MediaFormat.MIMETYPE_VIDEO_HEVC;
+            case "av1":
+                return MediaFormat.MIMETYPE_VIDEO_AV1;
+            default:
+                return MediaFormat.MIMETYPE_VIDEO_AVC;
+        }
+    }
+
+    /** codec_id tương ứng để gửi trong device_meta (PROTOCOL §2). */
+    public int codecId() {
+        switch (options.codec) {
+            case "h265":
+                return Protocol.CODEC_ID_H265;
+            case "av1":
+                return Protocol.CODEC_ID_AV1;
+            default:
+                return Protocol.CODEC_ID_H264;
+        }
     }
 
     public int getWidth() {
@@ -67,54 +97,88 @@ public final class ScreenEncoder {
         return deviceHeight;
     }
 
-    /** Chạy vòng encode, ghi liên tục ra out cho tới khi socket đóng hoặc encoder dừng. */
+    /**
+     * Chạy vòng encode, ghi liên tục ra out cho tới khi socket đóng hoặc encoder dừng.
+     * Màn hình xoay (kích thước đổi) → tự hủy encoder + virtual display và dựng lại theo
+     * kích thước mới trên cùng stream (decoder phía desktop tự nhận SPS/config mới).
+     */
     public void streamTo(OutputStream out) throws IOException {
-        MediaFormat format = createFormat();
-        MediaCodec codec;
-        try {
-            codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
-        } catch (IOException e) {
-            throw new IOException("không tạo được encoder H.264", e);
-        }
+        while (true) {
+            MediaFormat format = createFormat();
+            MediaCodec codec;
+            try {
+                codec = MediaCodec.createEncoderByType(mime());
+            } catch (IOException e) {
+                throw new IOException("không tạo được encoder " + options.codec, e);
+            }
 
-        Surface surface = null;
-        IBinder display = null;
-        try {
-            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
-            surface = codec.createInputSurface();
-            display = createVirtualDisplay(surface);
-            codec.start();
-            encodeLoop(codec, out);
-        } catch (IOException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IOException("lỗi encode video", e);
-        } finally {
-            if (display != null) {
+            Surface surface = null;
+            IBinder display = null;
+            boolean rotated;
+            try {
+                codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+                surface = codec.createInputSurface();
+                display = createVirtualDisplay(surface);
+                codec.start();
+                rotated = encodeLoop(codec, out);
+            } catch (IOException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new IOException("lỗi encode video", e);
+            } finally {
+                if (display != null) {
+                    try {
+                        SurfaceControl.destroyDisplay(display);
+                    } catch (Exception ignored) {
+                    }
+                }
                 try {
-                    SurfaceControl.destroyDisplay(display);
+                    codec.stop();
                 } catch (Exception ignored) {
                 }
+                codec.release();
+                if (surface != null) {
+                    surface.release();
+                }
             }
-            try {
-                codec.stop();
-            } catch (Exception ignored) {
+            if (!rotated) {
+                break;
             }
-            codec.release();
-            if (surface != null) {
-                surface.release();
-            }
+            configure(); // đọc kích thước mới rồi encode tiếp trên cùng socket
         }
     }
 
-    private void encodeLoop(MediaCodec codec, OutputStream out) throws IOException {
+    /** true nếu kích thước display hiện tại khác lúc configure() (màn hình đã xoay). */
+    private boolean rotationChanged() {
+        try {
+            DisplayInfo info = DisplayManager.create().getDisplayInfo(DISPLAY_ID);
+            return info != null && (info.width != deviceWidth || info.height != deviceHeight);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Vòng encode; trả true nếu dừng vì màn hình xoay (caller dựng lại encoder). */
+    private boolean encodeLoop(MediaCodec codec, OutputStream out) throws IOException {
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
         byte[] buffer = new byte[PACKET_HDR + 256 * 1024];
+        int sinceCheck = 0;
         while (true) {
             int index = codec.dequeueOutputBuffer(bufferInfo, DEQUEUE_TIMEOUT_US);
             if (index < 0) {
                 // Mọi mã INFO_* (TRY_AGAIN/FORMAT_CHANGED/...) đều âm: chưa có output buffer.
+                // Màn hình tĩnh là lúc rẻ nhất để kiểm tra xoay (~10Hz).
+                if (rotationChanged()) {
+                    return true;
+                }
                 continue;
+            }
+            if (++sinceCheck >= 30) { // đang stream liên tục: vẫn kiểm tra xoay định kỳ
+                sinceCheck = 0;
+                if (rotationChanged()) {
+                    codec.releaseOutputBuffer(index, false);
+                    return true;
+                }
             }
             try {
                 boolean eos = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;

@@ -160,10 +160,15 @@ rc_status rc_client_start(rc_client *c) {
         rc_server_teardown(c);
         return RC_ERR_DECODE;
     }
-    if (c->cfg.hw_decode)
-        rc_emit_status(c, RC_OK,
-                       rc_decoder_is_hw((rc_decoder *)c->decoder) ? "decoder: VAAPI (hw)"
-                                                                  : "decoder: software (VAAPI không khả dụng)");
+    if (c->cfg.hw_decode) {
+        const char *hw = rc_decoder_hw_name((rc_decoder *)c->decoder);
+        char msg[64];
+        if (hw)
+            snprintf(msg, sizeof msg, "decoder: %s (hw)", hw);
+        else
+            snprintf(msg, sizeof msg, "decoder: software (hw không khả dụng)");
+        rc_emit_status(c, RC_OK, msg);
+    }
 
     atomic_store(&c->running, 1);
 

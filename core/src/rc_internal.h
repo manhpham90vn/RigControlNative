@@ -122,9 +122,12 @@ rc_status rc_demux_read_packet(int fd, uint8_t **buf, size_t *cap, size_t *out_l
 
 /* decoder.c — bọc FFmpeg libavcodec */
 typedef struct rc_decoder rc_decoder;
-/* hw != 0 → thử hardware decode VAAPI (output NV12 qua hwdownload); lỗi → fallback software. */
+/* hw != 0 → thử hardware decode (VAAPI rồi CUDA/NVDEC, output NV12 qua hwdownload);
+ * không backend nào mở được → fallback software. */
 rc_decoder *rc_decoder_create(rc_codec codec, int hw);
 int rc_decoder_is_hw(const rc_decoder *d);
+/* Tên backend hw đang dùng ("vaapi"/"cuda"); NULL nếu software. */
+const char *rc_decoder_hw_name(const rc_decoder *d);
 void rc_decoder_destroy(rc_decoder *d);
 /* Nạp packet, nếu ra frame thì gọi cb. is_config=1 cho packet SPS/PPS. */
 rc_status rc_decoder_feed(rc_decoder *d, const uint8_t *data, size_t len, int is_config,

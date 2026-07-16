@@ -180,8 +180,8 @@ void chooser_show(App *app) {
     app->cb_fps = GTK_CHECK_BUTTON(cb_fps);
     gtk_box_append(GTK_BOX(box), cb_fps);
 
-    /* Decode bằng GPU (VAAPI) nếu máy hỗ trợ; không có thì core tự dùng software. */
-    GtkWidget *cb_hwdec = gtk_check_button_new_with_label("HW decode (VAAPI)");
+    /* Decode bằng GPU (VAAPI rồi CUDA/NVDEC) nếu máy hỗ trợ; không có → core tự dùng sw. */
+    GtkWidget *cb_hwdec = gtk_check_button_new_with_label("HW decode (VAAPI/NVDEC)");
     gtk_check_button_set_active(GTK_CHECK_BUTTON(cb_hwdec), app->sel_hwdec != 0);
     app->cb_hwdec = GTK_CHECK_BUTTON(cb_hwdec);
     gtk_box_append(GTK_BOX(box), cb_hwdec);
