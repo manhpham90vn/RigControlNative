@@ -113,6 +113,9 @@ rc_status rc_decoder_feed(rc_decoder *d, const uint8_t *data, size_t len, int is
             f.width = d->frame->width;
             f.height = d->frame->height;
             f.format = pf;
+            f.full_range = d->frame->color_range == AVCOL_RANGE_JPEG ||
+                           d->frame->format == AV_PIX_FMT_YUVJ420P;
+            f.bt709 = d->frame->colorspace == AVCOL_SPC_BT709;
             for (int i = 0; i < 4; i++) {
                 f.data[i] = d->frame->data[i];
                 f.linesize[i] = d->frame->linesize[i];

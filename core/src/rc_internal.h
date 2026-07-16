@@ -97,6 +97,8 @@ int rc_net_accept(int listen_fd);                   /* trả fd đã accept */
 int rc_net_connect_tcp(const char *host, int port); /* trả fd đã connect */
 
 /* adb.c — bọc lệnh adb */
+/* adb connect tới "ip:port" (wireless adb) rồi xác minh thiết bị online. */
+rc_status rc_adb_connect(const char *addr);
 rc_status rc_adb_push(const char *serial, const char *local, const char *remote);
 rc_status rc_adb_reverse(const char *serial, const char *remote, int local_port);
 rc_status rc_adb_reverse_remove(const char *serial, const char *remote);

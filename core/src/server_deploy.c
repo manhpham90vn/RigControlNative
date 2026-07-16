@@ -53,6 +53,15 @@ static rc_status parse_addr(const char *addr, char *host, size_t host_sz, int *p
 static rc_status deploy_usb(rc_client *c) {
     const char *serial = c->cfg.serial;
 
+    /* Serial dạng "ip:port" (wireless adb) → adb connect trước; idempotent nếu đã kết nối. */
+    if (serial && strchr(serial, ':')) {
+        rc_status cr = rc_adb_connect(serial);
+        if (cr != RC_OK) {
+            rc_emit_status(c, cr, "adb connect thất bại (kiểm tra ip:port / adb tcpip)");
+            return cr;
+        }
+    }
+
     rc_status r = rc_adb_push(serial, server_local_path(), RC_SERVER_REMOTE_PATH);
     if (r != RC_OK) {
         rc_emit_status(c, r, "adb push rc-server thất bại (kiểm tra RC_SERVER_PATH / thiết bị)");

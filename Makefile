@@ -48,6 +48,24 @@ run: gtk ## Chạy app GTK (nhiều máy → chọn trên UI; hoặc make run SE
 devices: ## Liệt kê thiết bị adb
 	@adb devices -l
 
+.PHONY: tcpip
+tcpip: ## Bật adb TCP/IP trên thiết bị USB (PORT=5555) rồi in lệnh connect
+	@port="$(PORT)"; [ -z "$$port" ] && port=5555; \
+	adb $(if $(SERIAL),-s $(SERIAL)) tcpip $$port || exit 1; \
+	sleep 1; \
+	ip=$$(adb $(if $(SERIAL),-s $(SERIAL)) shell ip route 2>/dev/null | awk '/wlan/ {print $$9; exit}'); \
+	if [ -n "$$ip" ]; then echo "→ make connect IP=$$ip:$$port"; \
+	else echo "Không đọc được IP Wi-Fi; xem trong Cài đặt > Wi-Fi rồi: make connect IP=<ip>:$$port"; fi
+
+.PHONY: connect
+connect: ## adb connect IP=<ip[:port]> (mặc định port 5555)
+	@[ -n "$(IP)" ] || { echo "Dùng: make connect IP=192.168.1.x[:5555]"; exit 1; }
+	@case "$(IP)" in *:*) adb connect "$(IP)";; *) adb connect "$(IP):5555";; esac
+
+.PHONY: disconnect
+disconnect: ## adb disconnect [IP=<ip[:port]>] (bỏ IP = ngắt tất cả)
+	@if [ -n "$(IP)" ]; then adb disconnect "$(IP)"; else adb disconnect; fi
+
 # ---- Format ----
 
 .PHONY: format

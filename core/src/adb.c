@@ -48,6 +48,16 @@ static int prefix_serial(const char *serial, const char *out[], int cap) {
     return i;
 }
 
+rc_status rc_adb_connect(const char *addr) {
+    if (!addr || !*addr) return RC_ERR_INVALID_ARG;
+    const char *a[4] = {"adb", "connect", addr, NULL};
+    rc_status r = adb_run((char *const *)a);
+    if (r != RC_OK) return r;
+    /* `adb connect` có thể exit 0 kể cả khi thất bại → xác minh bằng get-state. */
+    const char *v[5] = {"adb", "-s", addr, "get-state", NULL};
+    return adb_run_ex((char *const *)v, 1);
+}
+
 rc_status rc_adb_push(const char *serial, const char *local, const char *remote) {
     const char *a[8];
     int i = prefix_serial(serial, a, 8);

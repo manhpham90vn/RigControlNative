@@ -6,8 +6,8 @@
  * buffer có mutex bảo vệ rồi marshal về UI thread bằng g_idle_add + gtk_gl_area_queue_render.
  *
  * Cấu hình qua biến môi trường (tránh đụng arg-parser của GtkApplication):
- *   RC_SERIAL     adb serial (mặc định: thiết bị mặc định)
- *   RC_TCP_ADDR   "ip:port" → dùng transport TCP thay vì USB
+ *   RC_SERIAL     adb serial; "ip:port" → wireless adb, core tự `adb connect`
+ *   RC_TCP_ADDR   "ip:port" → transport TCP trực tiếp (server đã chạy sẵn, không qua adb)
  *   RC_MAX_SIZE   giới hạn cạnh dài (mặc định 0 = full)
  *   RC_BIT_RATE   bps (mặc định 8_000_000)
  *   RC_MAX_FPS    (mặc định 60)
@@ -34,17 +34,19 @@ typedef struct {
     char *serial_owned; /* serial của phiên (sở hữu) */
     int torn;           /* đã dừng client chưa (tránh double-free) */
     GtkWidget *win;
+    GtkWidget *bar; /* thanh nút điều khiển (đo chiều cao khi resize cửa sổ) */
     GtkGLArea *gl;
 
     /* GL objects (chỉ đụng trên UI thread) */
     GLuint prog, vao, vbo, tex[3];
-    GLint u_tex[3];
+    GLint u_tex[3], u_cmat, u_yoff;
     int tex_w[3], tex_h[3]; /* kích thước đã cấp cho từng texture */
 
     /* Frame chờ upload — bảo vệ bởi lock */
     GMutex lock;
     int have_pending;
-    int vw, vh;         /* kích thước video hiện tại */
+    int vw, vh;              /* kích thước video hiện tại */
+    int full_range, bt709;   /* thông tin màu của frame gần nhất */
     guint8 *plane[3];   /* Y, U, V đóng gói khít (stride = width) */
     size_t pcap[3];     /* dung lượng đã cấp cho từng plane */
 
@@ -66,22 +68,46 @@ static const char *VERT_BODY =
     "out vec2 v_uv;\n"
     "void main() { v_uv = tex; gl_Position = vec4(pos, 0.0, 1.0); }\n";
 
-/* BT.601 limited-range YUV→RGB. */
+/* YUV→RGB với ma trận màu cấp qua uniform (BT.601/709, limited/full-range theo frame). */
 static const char *FRAG_BODY =
     "uniform sampler2D y_tex;\n"
     "uniform sampler2D u_tex;\n"
     "uniform sampler2D v_tex;\n"
+    "uniform mat3 cmat;\n"
+    "uniform float y_off;\n"
     "in vec2 v_uv;\n"
     "out vec4 frag;\n"
     "void main() {\n"
-    "  float y = texture(y_tex, v_uv).r;\n"
-    "  float u = texture(u_tex, v_uv).r - 0.5;\n"
-    "  float v = texture(v_tex, v_uv).r - 0.5;\n"
-    "  float r = y + 1.402 * v;\n"
-    "  float g = y - 0.344136 * u - 0.714136 * v;\n"
-    "  float b = y + 1.772 * u;\n"
-    "  frag = vec4(r, g, b, 1.0);\n"
+    "  vec3 yuv = vec3(texture(y_tex, v_uv).r - y_off,\n"
+    "                  texture(u_tex, v_uv).r - 0.5,\n"
+    "                  texture(v_tex, v_uv).r - 0.5);\n"
+    "  frag = vec4(cmat * yuv, 1.0);\n"
     "}\n";
+
+/*
+ * Dựng ma trận YUV→RGB (cột-major cho GL) từ hệ số kr/kb của chuẩn màu; limited-range
+ * giãn Y (16-235) và chroma (16-240) về full trước khi nhân. Sai công thức range chính là
+ * nguyên nhân ảnh "phủ màn sương" (đen thành xám).
+ */
+static void color_matrix(int bt709, int full_range, float m[9], float *y_off) {
+    float kr = bt709 ? 0.2126f : 0.299f;
+    float kb = bt709 ? 0.0722f : 0.114f;
+    float kg = 1.f - kr - kb;
+    float cr = 2.f * (1.f - kr);
+    float cb = 2.f * (1.f - kb);
+    float ys = full_range ? 1.f : 255.f / 219.f;
+    float cs = full_range ? 1.f : 255.f / 224.f;
+    *y_off = full_range ? 0.f : 16.f / 255.f;
+    m[0] = ys;
+    m[1] = ys;
+    m[2] = ys;
+    m[3] = 0.f;
+    m[4] = -cs * cb * kb / kg;
+    m[5] = cs * cb;
+    m[6] = cs * cr;
+    m[7] = -cs * cr * kr / kg;
+    m[8] = 0.f;
+}
 
 static GLuint compile_shader(GLenum type, const char *header, const char *body) {
     const char *src[2] = {header, body};
@@ -137,6 +163,8 @@ static void on_realize(GtkGLArea *area, gpointer user) {
     st->u_tex[0] = glGetUniformLocation(st->prog, "y_tex");
     st->u_tex[1] = glGetUniformLocation(st->prog, "u_tex");
     st->u_tex[2] = glGetUniformLocation(st->prog, "v_tex");
+    st->u_cmat = glGetUniformLocation(st->prog, "cmat");
+    st->u_yoff = glGetUniformLocation(st->prog, "y_off");
 
     static const float verts[] = {
         /* pos      tex (v lật để gốc ảnh nằm trên) */
@@ -209,6 +237,7 @@ static gboolean on_render(GtkGLArea *area, GdkGLContext *ctx, gpointer user) {
 
     g_mutex_lock(&st->lock);
     int vw = st->vw, vh = st->vh;
+    int full_range = st->full_range, bt709 = st->bt709;
     if (st->have_pending && vw > 0 && vh > 0) {
         upload_plane(st, 0, 0, st->plane[0], vw, vh);
         upload_plane(st, 1, 1, st->plane[1], vw / 2, vh / 2);
@@ -238,6 +267,10 @@ static gboolean on_render(GtkGLArea *area, GdkGLContext *ctx, gpointer user) {
     glUniform1i(st->u_tex[0], 0);
     glUniform1i(st->u_tex[1], 1);
     glUniform1i(st->u_tex[2], 2);
+    float cmat[9], y_off;
+    color_matrix(bt709, full_range, cmat, &y_off);
+    glUniformMatrix3fv(st->u_cmat, 1, GL_FALSE, cmat);
+    glUniform1f(st->u_yoff, y_off);
     glBindVertexArray(st->vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     return TRUE;
@@ -249,6 +282,42 @@ static gboolean trigger_render(gpointer user) {
     Session *st = user;
     atomic_store(&st->render_scheduled, 0);
     if (atomic_load(&st->alive) && st->gl) gtk_gl_area_queue_render(st->gl);
+    return G_SOURCE_REMOVE;
+}
+
+/*
+ * Chỉnh cửa sổ khớp kích thước video (= màn hình thiết bị khi max_size=0): 1:1 pixel nếu vừa,
+ * quá to thì scale xuống ~90% monitor, luôn giữ tỉ lệ. Chạy trên UI thread khi có frame đầu
+ * hoặc khi kích thước video đổi (xoay máy).
+ */
+static gboolean resize_to_video(gpointer user) {
+    Session *st = user;
+    if (!atomic_load(&st->alive) || !st->win) return G_SOURCE_REMOVE;
+    int vw, vh;
+    g_mutex_lock(&st->lock);
+    vw = st->vw;
+    vh = st->vh;
+    g_mutex_unlock(&st->lock);
+    if (vw <= 0 || vh <= 0) return G_SOURCE_REMOVE;
+
+    int bar_h = st->bar ? gtk_widget_get_height(st->bar) : 0;
+    if (bar_h <= 0) bar_h = 48;
+
+    int max_w = vw, max_h = vh;
+    GdkSurface *surf = gtk_native_get_surface(GTK_NATIVE(st->win));
+    GdkMonitor *mon =
+        surf ? gdk_display_get_monitor_at_surface(gtk_widget_get_display(st->win), surf) : NULL;
+    if (mon) {
+        GdkRectangle geo;
+        gdk_monitor_get_geometry(mon, &geo);
+        max_w = geo.width * 9 / 10;
+        max_h = geo.height * 9 / 10 - bar_h;
+    }
+    double scale = 1.0;
+    if (vw * scale > max_w) scale = (double)max_w / vw;
+    if (vh * scale > max_h) scale = (double)max_h / vh;
+    gtk_window_set_default_size(GTK_WINDOW(st->win), (int)(vw * scale + 0.5),
+                                (int)(vh * scale + 0.5) + bar_h);
     return G_SOURCE_REMOVE;
 }
 
@@ -267,8 +336,11 @@ static void on_frame(const rc_frame *f, void *user) {
     if (f->format != RC_PIX_I420) return; /* MVP: chỉ I420 (sw H.264) */
 
     g_mutex_lock(&st->lock);
+    int size_changed = (st->vw != f->width || st->vh != f->height);
     st->vw = f->width;
     st->vh = f->height;
+    st->full_range = f->full_range;
+    st->bt709 = f->bt709;
     copy_plane(st, 0, f->data[0], f->linesize[0], f->width, f->height);
     copy_plane(st, 1, f->data[1], f->linesize[1], f->width / 2, f->height / 2);
     copy_plane(st, 2, f->data[2], f->linesize[2], f->width / 2, f->height / 2);
@@ -277,6 +349,8 @@ static void on_frame(const rc_frame *f, void *user) {
 
     static atomic_int first = 0;
     if (atomic_exchange(&first, 1) == 0) g_debug("[ui] frame đầu %dx%d", f->width, f->height);
+
+    if (size_changed) g_idle_add(resize_to_video, st); /* frame đầu hoặc xoay máy */
 
     if (atomic_exchange(&st->render_scheduled, 1) == 0)
         g_idle_add(trigger_render, st); /* coalesce: một render/lần */
@@ -529,6 +603,7 @@ static void build_gl_view(Session *st) {
     g_signal_connect(rot, "clicked", G_CALLBACK(on_rotate), st);
     gtk_box_append(GTK_BOX(bar), rot);
     gtk_box_append(GTK_BOX(root), bar);
+    st->bar = bar;
 
     /* Vùng render. */
     st->gl = GTK_GL_AREA(gtk_gl_area_new());
@@ -582,7 +657,8 @@ struct App {
 };
 
 static const int SIZE_VALUES[] = {0, 1920, 1280, 1024, 800};
-static const int BITRATE_VALUES[] = {2000000, 4000000, 8000000, 16000000};
+static const int BITRATE_VALUES[] = {2000000,  4000000,  8000000, 16000000,
+                                     24000000, 32000000, 48000000};
 
 static void session_teardown(Session *s) {
     if (s->torn) return;
@@ -700,6 +776,22 @@ static void on_refresh(GtkButton *btn, gpointer user) {
     populate_devices((App *)user, list);
 }
 
+/* Mở phiên tới thiết bị wireless adb; core tự `adb connect` vì serial chứa ':'. */
+static void wifi_session_open(App *app, GtkEntry *entry) {
+    const char *addr = gtk_editable_get_text(GTK_EDITABLE(entry));
+    if (!addr || !*addr) return;
+    read_settings(app);
+    new_session(app, addr);
+}
+
+static void on_wifi_activate(GtkEntry *entry, gpointer user) {
+    wifi_session_open((App *)user, entry);
+}
+
+static void on_wifi_clicked(GtkButton *btn, gpointer user) {
+    wifi_session_open((App *)user, g_object_get_data(G_OBJECT(btn), "entry"));
+}
+
 static GtkWidget *labeled_dropdown(const char *label, const char *const *items, guint def,
                                    GtkDropDown **out) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
@@ -724,8 +816,9 @@ static void show_chooser(App *app) {
     gtk_widget_set_margin_end(box, 18);
 
     static const char *const size_items[] = {"Full (gốc)", "1920", "1280", "1024", "800", NULL};
-    static const char *const bitrate_items[] = {"2 Mbps", "4 Mbps", "8 Mbps", "16 Mbps", NULL};
-    gtk_box_append(GTK_BOX(box), labeled_dropdown("Kích thước:", size_items, 2, &app->dd_size));
+    static const char *const bitrate_items[] = {"2 Mbps",  "4 Mbps",  "8 Mbps", "16 Mbps",
+                                                "24 Mbps", "32 Mbps", "48 Mbps", NULL};
+    gtk_box_append(GTK_BOX(box), labeled_dropdown("Kích thước:", size_items, 0, &app->dd_size));
     gtk_box_append(GTK_BOX(box), labeled_dropdown("Bitrate:", bitrate_items, 2, &app->dd_bitrate));
 
     GtkWidget *hint = gtk_label_new("Bấm một thiết bị để mở (mở được nhiều máy cùng lúc).");
@@ -745,6 +838,19 @@ static void show_chooser(App *app) {
     g_object_set_data(G_OBJECT(refresh), "list", list);
     g_signal_connect(refresh, "clicked", G_CALLBACK(on_refresh), app);
     gtk_box_append(GTK_BOX(box), refresh);
+
+    /* Kết nối wireless adb: nhập ip:port (máy đã bật `adb tcpip 5555`). */
+    GtkWidget *wifi_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *entry = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "192.168.1.x:5555");
+    gtk_widget_set_hexpand(entry, TRUE);
+    g_signal_connect(entry, "activate", G_CALLBACK(on_wifi_activate), app);
+    gtk_box_append(GTK_BOX(wifi_row), entry);
+    GtkWidget *wifi_btn = gtk_button_new_with_label("Kết nối Wi-Fi");
+    g_object_set_data(G_OBJECT(wifi_btn), "entry", entry);
+    g_signal_connect(wifi_btn, "clicked", G_CALLBACK(on_wifi_clicked), app);
+    gtk_box_append(GTK_BOX(wifi_row), wifi_btn);
+    gtk_box_append(GTK_BOX(box), wifi_row);
 
     populate_devices(app, GTK_LIST_BOX(list));
     gtk_window_set_child(GTK_WINDOW(win), box);

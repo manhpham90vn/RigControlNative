@@ -207,7 +207,9 @@ adb devices               # xác nhận thiết bị
   nhiều máy → hiện danh sách (model + serial) để chọn, một máy → tự kết nối; có nút *Làm mới*.
   Cấu hình qua biến môi trường (`RC_SERIAL`, `RC_TCP_ADDR`, `RC_MAX_SIZE`, `RC_BIT_RATE`,
   `RC_MAX_FPS`, `RC_AUDIO`, `RC_CONTROL`, `RC_SERVER_PATH`); đặt `RC_SERIAL`/`RC_TCP_ADDR` sẽ
-  bỏ qua bộ chọn và kết nối thẳng.
+  bỏ qua bộ chọn và kết nối thẳng. **Wireless adb**: `RC_SERIAL` dạng `ip:port` (hoặc nhập
+  vào ô *Kết nối Wi-Fi* trên bộ chọn) → core tự `adb connect` rồi deploy như USB; bật bằng
+  `make tcpip` (máy cắm USB) rồi `make connect IP=<ip>` / `make run SERIAL=<ip>:5555`.
 
 - **Phase 4** — điều khiển ngược: server inject qua `InputManager`/`InputManagerGlobal`
   (reflection, Android 14+). Chuột → cảm ứng (nhấn/kéo/thả), cuộn, bàn phím (phím thường → TEXT,

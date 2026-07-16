@@ -76,6 +76,9 @@ typedef struct {
     uint8_t *data[4]; /* con trỏ plane; sở hữu bởi core, chỉ hợp lệ trong callback */
     int linesize[4];
     int64_t pts_us; /* PTS micro-giây */
+    /* Thông tin màu để UI convert YUV→RGB đúng (stream không tag → limited BT.601). */
+    int full_range; /* 1 = full-range (JPEG); 0 = limited-range (Y 16-235) */
+    int bt709;      /* 1 = BT.709; 0 = BT.601 */
 } rc_frame;
 
 /* ---- Callback ----
