@@ -5,8 +5,9 @@ Mọi thay đổi ở server hoặc core phải cập nhật tại đây trướ
 
 Quy ước chung:
 - Mọi số nguyên nhiều byte truyền theo **big-endian (network byte order)**.
-- Toạ độ điểm ảnh tính theo **kích thước màn hình thiết bị** (không phải kích thước cửa sổ desktop);
-  desktop chịu trách nhiệm scale toạ độ chuột về hệ này trước khi gửi.
+- Toạ độ điểm ảnh tính theo **kích thước video** (`width`/`height` trong `device_meta` — là kích
+  thước encode, có thể nhỏ hơn màn hình thật khi đặt `max_size`). Desktop scale toạ độ cửa sổ →
+  video trước khi gửi; server scale tiếp video → pixel màn hình thiết bị khi inject.
 - Có tối đa **ba socket** độc lập: *video*, *audio*, *control*. Số lượng và thứ tự thiết lập
   mô tả ở mục Kết nối.
 
@@ -138,7 +139,8 @@ Control socket mang các **event** từ desktop tới thiết bị. Mỗi messag
 | 4    | `TEXT`         | nhập chuỗi UTF-8 (IME/clipboard)   |
 | 5    | `DEVICE_ACTION`| hành động đặc biệt (tắt/bật màn hình, panel, xoay) |
 
-Toạ độ `x,y` là **float32** theo pixel màn hình thiết bị. `buttons` là bitmask trạng thái nút.
+Toạ độ `x,y` là **float32** theo pixel video (`device_meta.width/height`); server chịu trách
+nhiệm scale về pixel màn hình thiết bị trước khi inject. `buttons` là bitmask trạng thái nút.
 
 ### 4.1 MOUSE_MOTION (type=0)
 ```

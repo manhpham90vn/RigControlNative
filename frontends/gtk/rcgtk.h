@@ -38,7 +38,8 @@ typedef struct {
     int have_pending;
     int vw, vh;            /* kích thước video hiện tại */
     int full_range, bt709; /* thông tin màu của frame gần nhất */
-    guint8 *plane[3];      /* Y, U, V đóng gói khít (stride = width) */
+    guint8 *plane[3];      /* Y, U, V giữ nguyên stride của decoder (copy 1 memcpy) */
+    int pstride[3];        /* stride từng plane; GL upload qua UNPACK_ROW_LENGTH */
     size_t pcap[3];        /* dung lượng đã cấp cho từng plane */
 
     atomic_int render_scheduled;

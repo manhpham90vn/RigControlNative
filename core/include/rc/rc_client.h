@@ -104,7 +104,8 @@ rc_status rc_client_start(rc_client *c);
 void rc_client_stop(rc_client *c);
 void rc_client_destroy(rc_client *c);
 
-/* ---- Input (desktop → thiết bị). Toạ độ theo pixel màn hình thiết bị. ---- */
+/* ---- Input (desktop → thiết bị). Toạ độ theo pixel VIDEO (device_meta / rc_frame);
+ * server tự scale về pixel màn hình thiết bị khi inject (PROTOCOL.md quy ước chung). ---- */
 #define RC_ACTION_UP 0
 #define RC_ACTION_DOWN 1
 
@@ -147,7 +148,8 @@ rc_status rc_client_send_device_action(rc_client *c, rc_device_action action);
 
 /* ---- Tiện ích ---- */
 const char *rc_status_str(rc_status code);
-/* Kích thước màn hình thiết bị (từ device_meta); trả RC_ERR_* nếu chưa handshake. */
+/* Kích thước VIDEO (từ device_meta — bằng màn hình thiết bị khi max_size=0, đã làm tròn
+ * xuống bội số 8); trả RC_ERR_* nếu chưa handshake. */
 rc_status rc_client_get_device_size(const rc_client *c, int *width, int *height);
 
 #ifdef __cplusplus

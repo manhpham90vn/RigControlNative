@@ -16,12 +16,15 @@ import java.io.InputStream;
  * Đọc control message từ desktop (docs/PROTOCOL.md §4) và inject vào hệ thống qua InputManager.
  *
  * Chuột được ánh xạ thành sự kiện cảm ứng (SOURCE_TOUCHSCREEN): nút trái nhấn→ACTION_DOWN,
- * di chuyển khi giữ→ACTION_MOVE, thả→ACTION_UP. Toạ độ nhận theo pixel màn hình thiết bị nên
- * inject thẳng không cần scale. KEY/TEXT inject qua bàn phím ảo; DEVICE_ACTION giao DeviceController.
+ * di chuyển khi giữ→ACTION_MOVE, thả→ACTION_UP. Toạ độ nhận theo **pixel video** (PROTOCOL.md
+ * quy ước chung) → scale về pixel màn hình thiết bị trước khi inject (khác nhau khi max_size
+ * thu nhỏ video, hoặc khi kích thước bị làm tròn xuống bội số 8).
+ * KEY/TEXT inject qua bàn phím ảo; DEVICE_ACTION giao DeviceController.
  */
 public final class ControlReceiver implements Runnable {
     private final DataInputStream in;
     private final DeviceController device;
+    private final ScreenEncoder encoder; // nguồn kích thước video + thiết bị để scale toạ độ
 
     private InputManager input;
     private long lastDownTime;
@@ -29,7 +32,17 @@ public final class ControlReceiver implements Runnable {
     public ControlReceiver(InputStream in, ScreenEncoder encoder, DeviceController device) {
         this.in = new DataInputStream(in);
         this.device = device;
-        // encoder không cần cho scale (toạ độ đã theo pixel thiết bị).
+        this.encoder = encoder;
+    }
+
+    private float scaleX(float x) {
+        float dx = x * encoder.getDeviceWidth() / encoder.getWidth();
+        return Math.max(0f, Math.min(dx, encoder.getDeviceWidth() - 1));
+    }
+
+    private float scaleY(float y) {
+        float dy = y * encoder.getDeviceHeight() / encoder.getHeight();
+        return Math.max(0f, Math.min(dy, encoder.getDeviceHeight() - 1));
     }
 
     @Override
@@ -112,6 +125,8 @@ public final class ControlReceiver implements Runnable {
 
     private void injectTouch(int action, float x, float y, float pressure) {
         if (input == null) return;
+        x = scaleX(x);
+        y = scaleY(y);
         long now = SystemClock.uptimeMillis();
         if (action == MotionEvent.ACTION_DOWN) lastDownTime = now;
         MotionEvent e = MotionEvent.obtain(lastDownTime, now, action, x, y, pressure, 1f, 0, 1f, 1f,
@@ -128,8 +143,8 @@ public final class ControlReceiver implements Runnable {
         pp[0].id = 0;
         pp[0].toolType = MotionEvent.TOOL_TYPE_MOUSE;
         MotionEvent.PointerCoords[] pc = {new MotionEvent.PointerCoords()};
-        pc[0].x = x;
-        pc[0].y = y;
+        pc[0].x = scaleX(x);
+        pc[0].y = scaleY(y);
         pc[0].setAxisValue(MotionEvent.AXIS_HSCROLL, h);
         pc[0].setAxisValue(MotionEvent.AXIS_VSCROLL, v);
         MotionEvent e = MotionEvent.obtain(now, now, MotionEvent.ACTION_SCROLL, 1, pp, pc, 0, 0, 1f,

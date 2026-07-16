@@ -89,20 +89,22 @@ void rc_client_set_status_callback(rc_client *c, rc_status_cb cb, void *user) {
 /* Vòng video: đọc packet → decode → frame_cb, tới khi socket đóng hoặc dừng. */
 static void *net_thread_fn(void *arg) {
     rc_client *c = arg;
+    uint8_t *buf = NULL; /* buffer packet tái sử dụng (demuxer realloc khi thiếu) */
+    size_t cap = 0;
     while (atomic_load(&c->running)) {
-        uint8_t *buf = NULL;
         size_t len = 0;
         int is_config = 0, is_key = 0;
         int64_t pts = 0;
-        rc_status r = rc_demux_read_packet(c->video_fd, &buf, &len, &is_config, &is_key, &pts);
+        rc_status r =
+            rc_demux_read_packet(c->video_fd, &buf, &cap, &len, &is_config, &is_key, &pts);
         if (r != RC_OK) {
             if (atomic_load(&c->running)) rc_emit_status(c, r, "luồng video kết thúc");
             break;
         }
         rc_decoder_feed((rc_decoder *)c->decoder, buf, len, is_config, pts, c->frame_cb,
                         c->frame_user);
-        free(buf);
     }
+    free(buf);
     atomic_store(&c->running, 0);
     return NULL;
 }
@@ -119,16 +121,17 @@ static void *audio_thread_fn(void *arg) {
     rc_audio *player = rc_audio_create(&meta); /* NULL nếu NONE hoặc không mở được thiết bị */
     c->audio_player = player;
 
+    uint8_t *buf = NULL; /* buffer packet tái sử dụng */
+    size_t cap = 0;
     while (atomic_load(&c->running)) {
-        uint8_t *buf = NULL;
         size_t len = 0;
         int is_config = 0, is_key = 0;
         int64_t pts = 0;
-        if (rc_demux_read_packet(c->audio_fd, &buf, &len, &is_config, &is_key, &pts) != RC_OK)
+        if (rc_demux_read_packet(c->audio_fd, &buf, &cap, &len, &is_config, &is_key, &pts) != RC_OK)
             break;
         if (player) rc_audio_feed(player, buf, len, is_config, pts);
-        free(buf);
     }
+    free(buf);
     return NULL;
 }
 

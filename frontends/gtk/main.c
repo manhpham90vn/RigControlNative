@@ -10,7 +10,7 @@
  *   RC_MAX_FPS    (mặc định 60)
  *   RC_AUDIO      0/1 (mặc định 0)
  *   RC_CONTROL    0/1 (mặc định 1; 0 = view-only)
- *   RC_SHOW_FPS   0/1 (mặc định 0) — overlay FPS trên video
+ *   RC_SHOW_FPS   0/1 (mặc định 1) — overlay FPS trên video
  *   RC_SERVER_PATH  đường dẫn jar server (libcore đọc; mặc định "server/rc-server")
  */
 #include "rcgtk.h"
@@ -59,7 +59,7 @@ int main(int argc, char **argv) {
     app.sel_bit_rate = app.base.bit_rate;
     app.sel_audio = app.base.audio;
     app.sel_control = app.base.control;
-    app.sel_show_fps = env_int("RC_SHOW_FPS", 0);
+    app.sel_show_fps = env_int("RC_SHOW_FPS", 1);
 
     GtkApplication *gtkapp =
         gtk_application_new("com.rigcontrol.native", G_APPLICATION_DEFAULT_FLAGS);

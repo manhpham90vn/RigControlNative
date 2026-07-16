@@ -60,6 +60,12 @@ public final class ScreenEncoder {
     public int getHeight() {
         return encHeight;
     }
+    public int getDeviceWidth() {
+        return deviceWidth;
+    }
+    public int getDeviceHeight() {
+        return deviceHeight;
+    }
 
     /** Chạy vòng encode, ghi liên tục ra out cho tới khi socket đóng hoặc encoder dừng. */
     public void streamTo(OutputStream out) throws IOException {
@@ -103,7 +109,7 @@ public final class ScreenEncoder {
 
     private void encodeLoop(MediaCodec codec, OutputStream out) throws IOException {
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
-        byte[] buffer = new byte[256 * 1024];
+        byte[] buffer = new byte[PACKET_HDR + 256 * 1024];
         while (true) {
             int index = codec.dequeueOutputBuffer(bufferInfo, DEQUEUE_TIMEOUT_US);
             if (index == MediaCodec.INFO_TRY_AGAIN_LATER
@@ -120,10 +126,10 @@ public final class ScreenEncoder {
                     ByteBuffer bb = codec.getOutputBuffer(index);
                     bb.position(bufferInfo.offset);
                     bb.limit(bufferInfo.offset + bufferInfo.size);
-                    if (buffer.length < bufferInfo.size) {
-                        buffer = new byte[bufferInfo.size];
+                    if (buffer.length < PACKET_HDR + bufferInfo.size) {
+                        buffer = new byte[PACKET_HDR + bufferInfo.size];
                     }
-                    bb.get(buffer, 0, bufferInfo.size);
+                    bb.get(buffer, PACKET_HDR, bufferInfo.size);
                     boolean config =
                         (bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
                     boolean key = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
@@ -155,6 +161,7 @@ public final class ScreenEncoder {
         // Gợi ý low-latency (bỏ qua nếu encoder không hỗ trợ).
         format.setInteger(MediaFormat.KEY_LATENCY, 1);
         format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1); // API 30+
+        format.setInteger(MediaFormat.KEY_PRIORITY, 0);    // 0 = realtime
         format.setFloat("max-fps-to-encoder", fps);
         return format;
     }
@@ -196,22 +203,26 @@ public final class ScreenEncoder {
         return new int[] {w & ~7, h & ~7};
     }
 
-    /** Đóng gói 1 packet: [pts_flags:u64][len:u32][payload]. */
+    /** Header packet: [pts_flags:u64][len:u32] — payload phải nằm sau PACKET_HDR byte. */
+    static final int PACKET_HDR = 12;
+
+    /**
+     * Đóng gói 1 packet: [pts_flags:u64][len:u32][payload]. `packet` chứa payload từ offset
+     * PACKET_HDR (12 byte đầu chừa cho header) → ghi socket đúng 1 lần, không cấp phát.
+     */
     static void writePacket(OutputStream out, boolean config, boolean key, long ptsUs,
-        byte[] payload, int len) throws IOException {
+        byte[] packet, int len) throws IOException {
         long flags = (ptsUs & Protocol.PKT_PTS_MASK);
         if (config)
             flags |= Protocol.PKT_FLAG_CONFIG;
         if (key)
             flags |= Protocol.PKT_FLAG_KEYFRAME;
-        byte[] hdr = new byte[12];
-        for (int i = 0; i < 8; i++) hdr[i] = (byte) (flags >>> (56 - 8 * i));
-        hdr[8] = (byte) (len >>> 24);
-        hdr[9] = (byte) (len >>> 16);
-        hdr[10] = (byte) (len >>> 8);
-        hdr[11] = (byte) len;
-        out.write(hdr);
-        out.write(payload, 0, len);
+        for (int i = 0; i < 8; i++) packet[i] = (byte) (flags >>> (56 - 8 * i));
+        packet[8] = (byte) (len >>> 24);
+        packet[9] = (byte) (len >>> 16);
+        packet[10] = (byte) (len >>> 8);
+        packet[11] = (byte) len;
+        out.write(packet, 0, PACKET_HDR + len);
         out.flush();
     }
 }

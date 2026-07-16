@@ -51,8 +51,8 @@ rc_status rc_demux_read_audio_meta(int fd, rc_audio_meta *out) {
     return RC_OK;
 }
 
-rc_status rc_demux_read_packet(int fd, uint8_t **out, size_t *out_len, int *is_config, int *is_key,
-                               int64_t *pts_us) {
+rc_status rc_demux_read_packet(int fd, uint8_t **buf, size_t *cap, size_t *out_len, int *is_config,
+                               int *is_key, int64_t *pts_us) {
     uint8_t hdr[8 + 4];
     rc_status r = rc_net_read_full(fd, hdr, sizeof hdr);
     if (r != RC_OK) return r;
@@ -65,16 +65,16 @@ rc_status rc_demux_read_packet(int fd, uint8_t **out, size_t *out_len, int *is_c
     if (pts_us) *pts_us = (int64_t)(flags & RC_PKT_PTS_MASK);
 
     if (len == 0 || len > (32u << 20)) return RC_ERR_PROTOCOL; /* chặn packet vô lý */
-    uint8_t *buf = malloc(len);
-    if (!buf) return RC_ERR_NOMEM;
-
-    r = rc_net_read_full(fd, buf, len);
-    if (r != RC_OK) {
-        free(buf);
-        return r;
+    if (*cap < len) {
+        uint8_t *nb = realloc(*buf, len);
+        if (!nb) return RC_ERR_NOMEM;
+        *buf = nb;
+        *cap = len;
     }
 
-    *out = buf;
+    r = rc_net_read_full(fd, *buf, len);
+    if (r != RC_OK) return r;
+
     *out_len = len;
     return RC_OK;
 }

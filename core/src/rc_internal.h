@@ -114,9 +114,10 @@ void rc_server_teardown(rc_client *c);
 /* demuxer.c — đọc device_meta / audio_meta rồi từng packet (khung dùng chung) */
 rc_status rc_demux_read_meta(int fd, rc_device_meta *out);
 rc_status rc_demux_read_audio_meta(int fd, rc_audio_meta *out);
-/* Đọc 1 packet: cấp buffer *out (caller free), set *out_len, *flags, *pts_us. */
-rc_status rc_demux_read_packet(int fd, uint8_t **out, size_t *out_len, int *is_config, int *is_key,
-                               int64_t *pts_us);
+/* Đọc 1 packet vào *buf (tái sử dụng giữa các lần gọi, realloc khi thiếu — caller sở hữu và
+ * free sau vòng đọc; khởi tạo *buf=NULL, *cap=0). Set *out_len, cờ và *pts_us. */
+rc_status rc_demux_read_packet(int fd, uint8_t **buf, size_t *cap, size_t *out_len, int *is_config,
+                               int *is_key, int64_t *pts_us);
 
 /* decoder.c — bọc FFmpeg libavcodec */
 typedef struct rc_decoder rc_decoder;

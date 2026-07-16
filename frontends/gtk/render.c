@@ -161,10 +161,12 @@ static void on_resize(GtkGLArea *area, int width, int height, gpointer user) {
     st->fb_h = height;
 }
 
-/* Upload 1 plane (đóng gói khít) vào texture, cấp lại storage nếu đổi kích thước. */
-static void upload_plane(Session *st, int i, int unit, const guint8 *data, int w, int h) {
+/* Upload 1 plane vào texture (stride qua UNPACK_ROW_LENGTH), cấp lại storage nếu đổi cỡ. */
+static void upload_plane(Session *st, int i, int unit, const guint8 *data, int stride, int w,
+                         int h) {
     glActiveTexture(GL_TEXTURE0 + unit);
     glBindTexture(GL_TEXTURE_2D, st->tex[i]);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, stride);
     if (st->tex_w[i] != w || st->tex_h[i] != h) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, data);
         st->tex_w[i] = w;
@@ -172,6 +174,7 @@ static void upload_plane(Session *st, int i, int unit, const guint8 *data, int w
     } else {
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, data);
     }
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 }
 
 static gboolean on_render(GtkGLArea *area, GdkGLContext *ctx, gpointer user) {
@@ -186,9 +189,9 @@ static gboolean on_render(GtkGLArea *area, GdkGLContext *ctx, gpointer user) {
     int vw = st->vw, vh = st->vh;
     int full_range = st->full_range, bt709 = st->bt709;
     if (st->have_pending && vw > 0 && vh > 0) {
-        upload_plane(st, 0, 0, st->plane[0], vw, vh);
-        upload_plane(st, 1, 1, st->plane[1], vw / 2, vh / 2);
-        upload_plane(st, 2, 2, st->plane[2], vw / 2, vh / 2);
+        upload_plane(st, 0, 0, st->plane[0], st->pstride[0], vw, vh);
+        upload_plane(st, 1, 1, st->plane[1], st->pstride[1], vw / 2, vh / 2);
+        upload_plane(st, 2, 2, st->plane[2], st->pstride[2], vw / 2, vh / 2);
         st->have_pending = 0;
     }
     g_mutex_unlock(&st->lock);
@@ -268,13 +271,15 @@ static gboolean resize_to_video(gpointer user) {
     return G_SOURCE_REMOVE;
 }
 
+/* Copy nguyên plane 1 lần memcpy, giữ stride của decoder (upload xử lý bằng ROW_LENGTH). */
 static void copy_plane(Session *st, int i, const uint8_t *src, int stride, int w, int h) {
-    size_t need = (size_t)w * h;
+    size_t need = (size_t)stride * (h - 1) + w; /* dòng cuối chỉ chắc chắn có w byte */
     if (st->pcap[i] < need) {
         st->plane[i] = g_realloc(st->plane[i], need);
         st->pcap[i] = need;
     }
-    for (int y = 0; y < h; y++) memcpy(st->plane[i] + (size_t)y * w, src + (size_t)y * stride, w);
+    memcpy(st->plane[i], src, need);
+    st->pstride[i] = stride;
 }
 
 /* Chạy trên thread nội bộ của core. */

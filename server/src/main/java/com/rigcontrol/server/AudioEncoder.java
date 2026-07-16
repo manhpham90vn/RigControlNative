@@ -113,7 +113,7 @@ public final class AudioEncoder {
         startRecordingWithRetry();
 
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
-        byte[] payload = new byte[16 * 1024];
+        byte[] payload = new byte[ScreenEncoder.PACKET_HDR + 16 * 1024];
         long totalBytes = 0;
         try {
             while (true) {
@@ -139,10 +139,10 @@ public final class AudioEncoder {
                             ByteBuffer bb = codec.getOutputBuffer(outIndex);
                             bb.position(bufferInfo.offset);
                             bb.limit(bufferInfo.offset + bufferInfo.size);
-                            if (payload.length < bufferInfo.size) {
-                                payload = new byte[bufferInfo.size];
+                            if (payload.length < ScreenEncoder.PACKET_HDR + bufferInfo.size) {
+                                payload = new byte[ScreenEncoder.PACKET_HDR + bufferInfo.size];
                             }
-                            bb.get(payload, 0, bufferInfo.size);
+                            bb.get(payload, ScreenEncoder.PACKET_HDR, bufferInfo.size);
                             boolean config =
                                 (bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
                             // Audio dùng chung khung với video; không có "keyframe".
