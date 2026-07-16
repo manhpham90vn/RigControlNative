@@ -91,7 +91,8 @@ clean: ## Xoá thư mục build (C + server)
 deps: ## In gợi ý cài dependency
 	@echo "Ubuntu:"
 	@echo "  sudo apt install build-essential cmake ninja-build pkg-config \\"
-	@echo "       libavcodec-dev libavutil-dev libgtk-4-dev clang-format clang-tidy"
+	@echo "       libavcodec-dev libavutil-dev libswresample-dev libasound2-dev \\"
+	@echo "       libgtk-4-dev libepoxy-dev clang-format clang-tidy"
 	@echo "  Android SDK: platforms/android-*/android.jar + build-tools/*/d8 (ANDROID_HOME)"
 
 .PHONY: help

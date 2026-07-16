@@ -8,9 +8,11 @@
 #include "rc_internal.h"
 
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 static char *dup_or_null(const char *s) {
     if (!s) return NULL;
@@ -63,6 +65,12 @@ rc_client *rc_client_create(const rc_config *cfg) {
     c->video_fd = c->audio_fd = c->control_fd = c->listen_fd = -1;
     atomic_init(&c->have_meta, 0);
     atomic_init(&c->running, 0);
+
+    /* Tên localabstract riêng cho mỗi phiên (đa session, kể cả cùng thiết bị). */
+    static atomic_int scid = 0;
+    int id = atomic_fetch_add(&scid, 1);
+    snprintf(c->socket_name, sizeof c->socket_name, "%s_%d_%d", RC_LOCALABSTRACT_NAME,
+             (int)getpid(), id);
     return c;
 }
 
@@ -100,14 +108,17 @@ static void *net_thread_fn(void *arg) {
 }
 
 /*
- * Vòng audio. Phase 2 chỉ đọc audio_meta rồi drain packet để server không nghẽn khi ghi;
- * decode + phát (rc_audio) là Phase 5.
+ * Vòng audio: đọc audio_meta, tạo player (Opus→ALSA) rồi feed từng packet. Nếu audio không khả
+ * dụng (codec NONE / mở thiết bị lỗi) → player = NULL, chỉ drain để server không nghẽn.
  */
 static void *audio_thread_fn(void *arg) {
     rc_client *c = arg;
     rc_audio_meta meta;
     if (rc_demux_read_audio_meta(c->audio_fd, &meta) != RC_OK) return NULL;
-    /* TODO(phase5): c->audio_player = rc_audio_create(&meta); rc_audio_feed(...) mỗi packet. */
+
+    rc_audio *player = rc_audio_create(&meta); /* NULL nếu NONE hoặc không mở được thiết bị */
+    c->audio_player = player;
+
     while (atomic_load(&c->running)) {
         uint8_t *buf = NULL;
         size_t len = 0;
@@ -115,6 +126,7 @@ static void *audio_thread_fn(void *arg) {
         int64_t pts = 0;
         if (rc_demux_read_packet(c->audio_fd, &buf, &len, &is_config, &is_key, &pts) != RC_OK)
             break;
+        if (player) rc_audio_feed(player, buf, len, is_config, pts);
         free(buf);
     }
     return NULL;

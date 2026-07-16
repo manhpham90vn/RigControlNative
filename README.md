@@ -150,7 +150,7 @@ callback (GTK marshal bằng `g_idle_add`).
 
 ## Build & chạy (MVP — Ubuntu/GTK)
 
-Yêu cầu: `libavcodec-dev libavutil-dev`, `libgtk-4-dev libepoxy-dev` + EGL/GL, `adb` (platform-tools), JDK 11+,
+Yêu cầu: `libavcodec-dev libavutil-dev libswresample-dev libasound2-dev`, `libgtk-4-dev libepoxy-dev` + EGL/GL, `adb` (platform-tools), JDK 11+,
 Android SDK (`platforms/android-*/android.jar` + `build-tools/*/d8`) để build server. **Không cần
 NDK** (server là Java thuần). Thiết bị Android bật USB debugging.
 
@@ -194,7 +194,7 @@ adb devices               # xác nhận thiết bị
 
 ## Trạng thái
 
-🚧 Đang phát triển — **Phase 4**: mirror + **điều khiển** đầy đủ qua cửa sổ GTK.
+🚧 Đang phát triển — **Phase 5**: mirror video + **audio** + điều khiển đầy đủ qua cửa sổ GTK.
 
 - **Phase 1** — Android `rc-server`: capture + encode video (H.264) và audio (Opus), mở socket
   USB (localabstract) / TCP (LAN), gửi `device_meta`/`audio_meta`. Audio dùng `REMOTE_SUBMIX`
@@ -214,9 +214,15 @@ adb devices               # xác nhận thiết bị
   phím điều hướng/sửa → KEY), nút thiết bị **BACK/HOME/RECENT/POWER/VOLUME** trên thanh công cụ,
   và **DEVICE_ACTION** (xoay qua `IWindowManager.freezeRotation`, screen off/on, panel thông báo).
   Đã kiểm chứng end-to-end: HOME đổi foreground, vuốt mở app drawer, ROTATE đổi `user_rotation`.
+- **Phase 5** — audio playback ở desktop: `libcore` giải mã **Opus** (FFmpeg) → `libswresample`
+  (S16 interleaved) → phát qua **ALSA** (blocking, tự pace real-time). OpusHead tự tổng hợp từ
+  `audio_meta`. Thiết bị không có audio / không mở được ALSA → tự bỏ qua, video vẫn chạy. Đã
+  kiểm chứng phát đúng 48000 mẫu/s ra sound card song song với video.
 
-Còn lại: audio playback desktop (Phase 5), LAN transport + hardware decode zero-copy (Phase 6),
-port Windows/macOS (Phase 7).
+> Backend audio hiện dùng **ALSA** (Ubuntu MVP); chuyển sang **miniaudio** (cross-platform) khi
+> port Windows/macOS — `rc_audio` đã trừu tượng hoá sẵn.
+
+Còn lại: LAN transport + hardware decode zero-copy (Phase 6), port Windows/macOS (Phase 7).
 
 ## License
 

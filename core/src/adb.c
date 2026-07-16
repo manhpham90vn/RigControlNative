@@ -96,7 +96,8 @@ static const char *codec_name(rc_codec codec) {
     }
 }
 
-rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, int *out_pid) {
+rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, const char *socket_name,
+                            int *out_pid) {
     if (!cfg) return RC_ERR_INVALID_ARG;
 
     /* Server chạy foreground trong `adb shell` và stream tới khi socket đóng → KHÔNG waitpid,
@@ -104,7 +105,9 @@ rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, int *out_p
     char classpath[64];
     snprintf(classpath, sizeof classpath, "CLASSPATH=%s", RC_SERVER_REMOTE_PATH);
     char kv_max_size[32], kv_bit_rate[32], kv_max_fps[32], kv_codec[24], kv_audio[16],
-        kv_control[16], kv_tcp[16];
+        kv_control[16], kv_tcp[16], kv_socket[96];
+    snprintf(kv_socket, sizeof kv_socket, "socket_name=%s",
+             socket_name ? socket_name : RC_LOCALABSTRACT_NAME);
     snprintf(kv_max_size, sizeof kv_max_size, "max_size=%d", cfg->max_size);
     snprintf(kv_bit_rate, sizeof kv_bit_rate, "bit_rate=%d",
              cfg->bit_rate > 0 ? cfg->bit_rate : 8000000);
@@ -122,6 +125,7 @@ rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, int *out_p
     a[i++] = "app_process";
     a[i++] = "/";
     a[i++] = "com.rigcontrol.server.Server";
+    a[i++] = kv_socket;
     a[i++] = kv_max_size;
     a[i++] = kv_bit_rate;
     a[i++] = kv_max_fps;

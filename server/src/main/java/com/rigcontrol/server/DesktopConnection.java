@@ -72,25 +72,24 @@ public final class DesktopConnection implements Closeable {
     }
 
     private void openUsb(Options options) throws IOException {
-        System.out.println("[rc-server] connect localabstract:" + Protocol.LOCALABSTRACT_NAME);
-        LocalSocket video = connectLocal();
+        System.out.println("[rc-server] connect localabstract:" + options.socketName);
+        LocalSocket video = connectLocal(options.socketName);
         videoOut = video.getOutputStream();
 
         if (options.audio) {
-            LocalSocket audio = connectLocal();
+            LocalSocket audio = connectLocal(options.socketName);
             audioOut = audio.getOutputStream();
         }
         if (options.control) {
-            LocalSocket control = connectLocal();
+            LocalSocket control = connectLocal(options.socketName);
             controlIn = control.getInputStream();
             controlOut = control.getOutputStream();
         }
     }
 
-    private LocalSocket connectLocal() throws IOException {
+    private LocalSocket connectLocal(String name) throws IOException {
         LocalSocket socket = new LocalSocket();
-        socket.connect(new LocalSocketAddress(
-            Protocol.LOCALABSTRACT_NAME, LocalSocketAddress.Namespace.ABSTRACT));
+        socket.connect(new LocalSocketAddress(name, LocalSocketAddress.Namespace.ABSTRACT));
         closeables.add(socket);
         return socket;
     }

@@ -4,7 +4,10 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
     libavcodec
     libavutil
+    libswresample
 )
+# Backend phát audio (Ubuntu MVP): ALSA. Cross-platform (miniaudio) để phase sau.
+pkg_check_modules(ALSA REQUIRED IMPORTED_TARGET alsa)
 find_package(Threads REQUIRED)
 
 add_library(rccore
@@ -26,6 +29,7 @@ target_include_directories(rccore
 target_link_libraries(rccore
     PUBLIC  Threads::Threads
     PRIVATE PkgConfig::FFMPEG
+    PRIVATE PkgConfig::ALSA
 )
 
 target_compile_features(rccore PUBLIC c_std_11)

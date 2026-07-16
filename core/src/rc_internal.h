@@ -76,7 +76,8 @@ struct rc_client {
     rc_device_meta meta;
     atomic_int have_meta;
 
-    int server_pid; /* pid tiến trình `adb shell app_process` (USB); 0 = không có */
+    int server_pid;        /* pid tiến trình `adb shell app_process` (USB); 0 = không có */
+    char socket_name[64];  /* tên localabstract riêng của session (đa phiên) */
 
     atomic_int running;
     /* Thread handles được khai báo trong client.c (pthread) để tránh include ở header này. */
@@ -100,7 +101,8 @@ rc_status rc_adb_push(const char *serial, const char *local, const char *remote)
 rc_status rc_adb_reverse(const char *serial, const char *remote, int local_port);
 rc_status rc_adb_reverse_remove(const char *serial, const char *remote);
 /* Chạy server qua app_process (nền, không chặn); trả pid tiến trình adb qua *out_pid. */
-rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, int *out_pid);
+rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, const char *socket_name,
+                            int *out_pid);
 #define RC_SERVER_REMOTE_PATH "/data/local/tmp/rc-server"
 
 /* server_deploy.c — đẩy + chạy rc-server, thiết lập tunnel, trả về video/control fd */

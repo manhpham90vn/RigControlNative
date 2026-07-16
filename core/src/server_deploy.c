@@ -63,13 +63,13 @@ static rc_status deploy_usb(rc_client *c) {
     c->listen_fd = rc_net_listen_loopback(&port);
     if (c->listen_fd < 0) return RC_ERR_CONNECT;
 
-    r = rc_adb_reverse(serial, RC_LOCALABSTRACT_NAME, port);
+    r = rc_adb_reverse(serial, c->socket_name, port);
     if (r != RC_OK) {
         rc_emit_status(c, r, "adb reverse thất bại");
         return r;
     }
 
-    r = rc_adb_run_server(serial, &c->cfg, &c->server_pid);
+    r = rc_adb_run_server(serial, &c->cfg, c->socket_name, &c->server_pid);
     if (r != RC_OK) {
         rc_emit_status(c, r, "không chạy được rc-server (app_process)");
         return r;
@@ -152,5 +152,5 @@ void rc_server_teardown(rc_client *c) {
     }
 
     if (c->cfg.transport == RC_TRANSPORT_USB)
-        rc_adb_reverse_remove(c->cfg.serial, RC_LOCALABSTRACT_NAME);
+        rc_adb_reverse_remove(c->cfg.serial, c->socket_name);
 }

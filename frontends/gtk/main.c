@@ -25,9 +25,14 @@
 
 #include "rc/rc_client.h"
 
+typedef struct App App;
+
 typedef struct {
+    App *app;
     rc_client *client;
-    rc_config cfg; /* mẫu cấu hình; serial được điền khi chọn thiết bị */
+    rc_config cfg;      /* cấu hình phiên */
+    char *serial_owned; /* serial của phiên (sở hữu) */
+    int torn;           /* đã dừng client chưa (tránh double-free) */
     GtkWidget *win;
     GtkGLArea *gl;
 
@@ -51,7 +56,7 @@ typedef struct {
     /* Trạng thái input (UI thread) */
     uint32_t mouse_buttons; /* bitmask RC_BUTTON_* đang giữ */
     float dev_x, dev_y;     /* vị trí con trỏ gần nhất theo pixel thiết bị */
-} AppState;
+} Session;
 
 /* ---------- Shader ---------- */
 
@@ -123,7 +128,7 @@ static GLuint build_program(gboolean es) {
 /* ---------- GL lifecycle ---------- */
 
 static void on_realize(GtkGLArea *area, gpointer user) {
-    AppState *st = user;
+    Session *st = user;
     gtk_gl_area_make_current(area);
     if (gtk_gl_area_get_error(area) != NULL) return;
 
@@ -163,7 +168,7 @@ static void on_realize(GtkGLArea *area, gpointer user) {
 }
 
 static void on_unrealize(GtkGLArea *area, gpointer user) {
-    AppState *st = user;
+    Session *st = user;
     gtk_gl_area_make_current(area);
     if (gtk_gl_area_get_error(area) != NULL) return;
     if (st->tex[0]) glDeleteTextures(3, st->tex);
@@ -176,13 +181,13 @@ static void on_unrealize(GtkGLArea *area, gpointer user) {
 
 static void on_resize(GtkGLArea *area, int width, int height, gpointer user) {
     (void)area;
-    AppState *st = user;
+    Session *st = user;
     st->fb_w = width;
     st->fb_h = height;
 }
 
 /* Upload 1 plane (đóng gói khít) vào texture, cấp lại storage nếu đổi kích thước. */
-static void upload_plane(AppState *st, int i, int unit, const guint8 *data, int w, int h) {
+static void upload_plane(Session *st, int i, int unit, const guint8 *data, int w, int h) {
     glActiveTexture(GL_TEXTURE0 + unit);
     glBindTexture(GL_TEXTURE_2D, st->tex[i]);
     if (st->tex_w[i] != w || st->tex_h[i] != h) {
@@ -196,7 +201,7 @@ static void upload_plane(AppState *st, int i, int unit, const guint8 *data, int 
 
 static gboolean on_render(GtkGLArea *area, GdkGLContext *ctx, gpointer user) {
     (void)ctx;
-    AppState *st = user;
+    Session *st = user;
     if (!st->prog) return FALSE;
 
     glClearColor(0.f, 0.f, 0.f, 1.f);
@@ -241,13 +246,13 @@ static gboolean on_render(GtkGLArea *area, GdkGLContext *ctx, gpointer user) {
 /* ---------- Frame marshaling ---------- */
 
 static gboolean trigger_render(gpointer user) {
-    AppState *st = user;
+    Session *st = user;
     atomic_store(&st->render_scheduled, 0);
     if (atomic_load(&st->alive) && st->gl) gtk_gl_area_queue_render(st->gl);
     return G_SOURCE_REMOVE;
 }
 
-static void copy_plane(AppState *st, int i, const uint8_t *src, int stride, int w, int h) {
+static void copy_plane(Session *st, int i, const uint8_t *src, int stride, int w, int h) {
     size_t need = (size_t)w * h;
     if (st->pcap[i] < need) {
         st->plane[i] = g_realloc(st->plane[i], need);
@@ -258,7 +263,7 @@ static void copy_plane(AppState *st, int i, const uint8_t *src, int stride, int 
 
 /* Chạy trên thread nội bộ của core. */
 static void on_frame(const rc_frame *f, void *user) {
-    AppState *st = user;
+    Session *st = user;
     if (f->format != RC_PIX_I420) return; /* MVP: chỉ I420 (sw H.264) */
 
     g_mutex_lock(&st->lock);
@@ -320,7 +325,7 @@ static GPtrArray *list_adb_devices(void) {
 /* ---------- Kết nối tới một thiết bị ---------- */
 
 static gpointer start_thread(gpointer user) {
-    AppState *st = user;
+    Session *st = user;
     rc_status r = rc_client_start(st->client);
     if (r != RC_OK) g_warning("[core] start thất bại: %s", rc_status_str(r));
     return NULL;
@@ -329,7 +334,7 @@ static gpointer start_thread(gpointer user) {
 /* ---------- Input: chuột / bàn phím / nút thiết bị ---------- */
 
 /* Ánh xạ toạ độ widget (logic) → pixel thiết bị, có tính letterbox. FALSE nếu ngoài vùng video. */
-static gboolean widget_to_device(AppState *st, double wx, double wy, float *dx, float *dy) {
+static gboolean widget_to_device(Session *st, double wx, double wy, float *dx, float *dy) {
     int vw, vh;
     g_mutex_lock(&st->lock);
     vw = st->vw;
@@ -371,7 +376,7 @@ static uint32_t gdk_button_to_rc(guint button) {
 
 static void on_pressed(GtkGestureClick *g, int n, double x, double y, gpointer user) {
     (void)n;
-    AppState *st = user;
+    Session *st = user;
     if (!st->client) return;
     float dx, dy;
     if (!widget_to_device(st, x, y, &dx, &dy)) return;
@@ -385,7 +390,7 @@ static void on_pressed(GtkGestureClick *g, int n, double x, double y, gpointer u
 
 static void on_released(GtkGestureClick *g, int n, double x, double y, gpointer user) {
     (void)n;
-    AppState *st = user;
+    Session *st = user;
     if (!st->client) return;
     float dx, dy;
     if (!widget_to_device(st, x, y, &dx, &dy)) {
@@ -399,7 +404,7 @@ static void on_released(GtkGestureClick *g, int n, double x, double y, gpointer 
 
 static void on_motion(GtkEventControllerMotion *m, double x, double y, gpointer user) {
     (void)m;
-    AppState *st = user;
+    Session *st = user;
     if (!st->client || st->mouse_buttons == 0) return; /* chỉ gửi khi đang kéo */
     float dx, dy;
     if (!widget_to_device(st, x, y, &dx, &dy)) return;
@@ -410,7 +415,7 @@ static void on_motion(GtkEventControllerMotion *m, double x, double y, gpointer 
 
 static gboolean on_scroll(GtkEventControllerScroll *s, double dx, double dy, gpointer user) {
     (void)s;
-    AppState *st = user;
+    Session *st = user;
     if (!st->client) return FALSE;
     rc_client_send_scroll(st->client, st->dev_x, st->dev_y, (float)-dx, (float)-dy);
     return TRUE;
@@ -456,7 +461,7 @@ static gboolean on_key_pressed(GtkEventControllerKey *k, guint keyval, guint key
     (void)k;
     (void)keycode;
     (void)state;
-    AppState *st = user;
+    Session *st = user;
     if (!st->client) return FALSE;
     int ac = gdk_to_android_key(keyval);
     if (ac >= 0) {
@@ -479,14 +484,14 @@ static void on_key_released(GtkEventControllerKey *k, guint keyval, guint keycod
     (void)k;
     (void)keycode;
     (void)state;
-    AppState *st = user;
+    Session *st = user;
     if (!st->client) return;
     int ac = gdk_to_android_key(keyval);
     if (ac >= 0) rc_client_send_key(st->client, RC_ACTION_UP, (uint32_t)ac, 0, 0);
 }
 
 static void on_navbtn(GtkButton *btn, gpointer user) {
-    AppState *st = user;
+    Session *st = user;
     if (!st->client) return;
     int code = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(btn), "keycode"));
     rc_client_click_button(st->client, (uint32_t)code);
@@ -494,18 +499,18 @@ static void on_navbtn(GtkButton *btn, gpointer user) {
 
 static void on_rotate(GtkButton *btn, gpointer user) {
     (void)btn;
-    AppState *st = user;
+    Session *st = user;
     if (st->client) rc_client_send_device_action(st->client, RC_DEVICE_ROTATE);
 }
 
-static void add_nav(GtkWidget *bar, AppState *st, const char *label, int keycode) {
+static void add_nav(GtkWidget *bar, Session *st, const char *label, int keycode) {
     GtkWidget *b = gtk_button_new_with_label(label);
     g_object_set_data(G_OBJECT(b), "keycode", GINT_TO_POINTER(keycode));
     g_signal_connect(b, "clicked", G_CALLBACK(on_navbtn), st);
     gtk_box_append(GTK_BOX(bar), b);
 }
 
-static void build_gl_view(AppState *st) {
+static void build_gl_view(Session *st) {
     GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
     /* Thanh nút điều khiển thiết bị. */
@@ -564,116 +569,200 @@ static void build_gl_view(AppState *st) {
     gtk_window_set_child(GTK_WINDOW(st->win), root);
 }
 
-/* serial: transient (rc_client_create copy nội bộ); NULL = thiết bị mặc định / TCP. */
-static void connect_device(AppState *st, const char *serial) {
-    st->cfg.serial = serial;
-    st->client = rc_client_create(&st->cfg);
-    if (!st->client) {
+/* ---------- Vòng đời phiên (đa session) ---------- */
+
+struct App {
+    GtkApplication *gtk;
+    rc_config base;   /* mẫu cấu hình từ env */
+    int sel_max_size; /* lựa chọn hiện tại (dropdown hoặc env) */
+    int sel_bit_rate;
+    GtkDropDown *dd_size; /* NULL nếu kết nối thẳng qua env */
+    GtkDropDown *dd_bitrate;
+    GList *sessions; /* Session* — giải phóng khi thoát app */
+};
+
+static const int SIZE_VALUES[] = {0, 1920, 1280, 1024, 800};
+static const int BITRATE_VALUES[] = {2000000, 4000000, 8000000, 16000000};
+
+static void session_teardown(Session *s) {
+    if (s->torn) return;
+    s->torn = 1;
+    atomic_store(&s->alive, 0);
+    s->gl = NULL; /* chặn trigger_render đụng widget đã hủy */
+    rc_client_stop(s->client);
+    rc_client_destroy(s->client);
+    s->client = NULL;
+    for (int i = 0; i < 3; i++) {
+        g_free(s->plane[i]);
+        s->plane[i] = NULL;
+    }
+}
+
+static void on_session_destroy(GtkWidget *win, gpointer user) {
+    (void)win;
+    session_teardown((Session *)user);
+}
+
+static void read_settings(App *app) {
+    if (app->dd_size) app->sel_max_size = SIZE_VALUES[gtk_drop_down_get_selected(app->dd_size)];
+    if (app->dd_bitrate)
+        app->sel_bit_rate = BITRATE_VALUES[gtk_drop_down_get_selected(app->dd_bitrate)];
+}
+
+/* Mở một phiên mới trong cửa sổ riêng. serial: NULL = mặc định / TCP. */
+static void new_session(App *app, const char *serial) {
+    Session *s = g_new0(Session, 1);
+    s->app = app;
+    g_mutex_init(&s->lock);
+    atomic_init(&s->render_scheduled, 0);
+    atomic_init(&s->alive, 1);
+
+    s->cfg = app->base;
+    s->cfg.max_size = app->sel_max_size;
+    s->cfg.bit_rate = app->sel_bit_rate;
+    s->serial_owned = serial ? g_strdup(serial) : NULL;
+    s->cfg.serial = s->serial_owned;
+
+    s->client = rc_client_create(&s->cfg);
+    if (!s->client) {
         g_warning("Không tạo được rc_client");
+        g_mutex_clear(&s->lock);
+        g_free(s->serial_owned);
+        g_free(s);
         return;
     }
-    rc_client_set_frame_callback(st->client, on_frame, st);
-    rc_client_set_status_callback(st->client, on_status, st);
+    rc_client_set_frame_callback(s->client, on_frame, s);
+    rc_client_set_status_callback(s->client, on_status, s);
 
-    build_gl_view(st);
+    s->win = gtk_application_window_new(app->gtk);
+    char title[192];
+    const char *tag = serial ? serial
+                             : (s->cfg.transport == RC_TRANSPORT_TCP ? s->cfg.tcp_addr : "default");
+    g_snprintf(title, sizeof title, "RigControlNative — %s", tag ? tag : "default");
+    gtk_window_set_title(GTK_WINDOW(s->win), title);
+    gtk_window_set_default_size(GTK_WINDOW(s->win), 540, 960);
+    g_signal_connect(s->win, "destroy", G_CALLBACK(on_session_destroy), s);
+    build_gl_view(s);
+    gtk_window_present(GTK_WINDOW(s->win));
 
-    GThread *t = g_thread_new("rc-start", start_thread, st); /* deploy nền, không đơ UI */
+    app->sessions = g_list_prepend(app->sessions, s);
+
+    GThread *t = g_thread_new("rc-start", start_thread, s); /* deploy nền, không đơ UI */
     g_thread_unref(t);
 }
 
 /* ---------- Màn chọn thiết bị ---------- */
 
-static void show_chooser(AppState *st);
-
-static void on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user) {
-    (void)box;
-    AppState *st = user;
-    const char *serial = g_object_get_data(G_OBJECT(row), "serial");
-    connect_device(st, serial); /* serial sống nhờ row-data tới khi create copy xong */
-}
-
-static void on_refresh(GtkButton *btn, gpointer user) {
-    (void)btn;
-    show_chooser((AppState *)user);
-}
-
-static void show_chooser(AppState *st) {
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
-    gtk_widget_set_margin_top(box, 24);
-    gtk_widget_set_margin_bottom(box, 24);
-    gtk_widget_set_margin_start(box, 24);
-    gtk_widget_set_margin_end(box, 24);
-
-    GtkWidget *title = gtk_label_new(NULL);
-    gtk_label_set_markup(GTK_LABEL(title), "<span size='large' weight='bold'>Chọn thiết bị</span>");
-    gtk_box_append(GTK_BOX(box), title);
+static void populate_devices(App *app, GtkListBox *list) {
+    (void)app;
+    GtkWidget *child;
+    while ((child = gtk_widget_get_first_child(GTK_WIDGET(list))))
+        gtk_list_box_remove(list, child);
 
     GPtrArray *devs = list_adb_devices();
     if (devs->len == 0) {
-        GtkWidget *empty = gtk_label_new(
-            "Không thấy thiết bị.\nCắm máy / bật USB debugging rồi bấm Làm mới.");
-        gtk_label_set_justify(GTK_LABEL(empty), GTK_JUSTIFY_CENTER);
-        gtk_widget_set_vexpand(empty, TRUE);
-        gtk_box_append(GTK_BOX(box), empty);
-    } else {
-        GtkWidget *list = gtk_list_box_new();
-        gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
-        gtk_widget_add_css_class(list, "boxed-list");
-        gtk_widget_set_vexpand(list, TRUE);
-        for (guint i = 0; i < devs->len; i++) {
-            DevInfo *d = devs->pdata[i];
-            char text[256];
-            g_snprintf(text, sizeof text, "<b>%s</b>\n<small>%s</small>",
-                       d->model[0] ? d->model : "(không rõ model)", d->serial);
-            GtkWidget *lbl = gtk_label_new(NULL);
-            gtk_label_set_markup(GTK_LABEL(lbl), text);
-            gtk_label_set_xalign(GTK_LABEL(lbl), 0);
-            gtk_widget_set_margin_top(lbl, 10);
-            gtk_widget_set_margin_bottom(lbl, 10);
-            gtk_widget_set_margin_start(lbl, 12);
-            gtk_widget_set_margin_end(lbl, 12);
-            GtkWidget *row = gtk_list_box_row_new();
-            gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), lbl);
-            g_object_set_data_full(G_OBJECT(row), "serial", g_strdup(d->serial), g_free);
-            gtk_list_box_append(GTK_LIST_BOX(list), row);
-        }
-        g_signal_connect(list, "row-activated", G_CALLBACK(on_row_activated), st);
-        gtk_box_append(GTK_BOX(box), list);
+        GtkWidget *lbl =
+            gtk_label_new("Không thấy thiết bị. Cắm máy / bật USB debugging rồi Làm mới.");
+        gtk_widget_set_margin_top(lbl, 16);
+        gtk_widget_set_margin_bottom(lbl, 16);
+        gtk_list_box_append(list, lbl);
+    }
+    for (guint i = 0; i < devs->len; i++) {
+        DevInfo *d = devs->pdata[i];
+        char text[256];
+        g_snprintf(text, sizeof text, "<b>%s</b>\n<small>%s</small>",
+                   d->model[0] ? d->model : "(không rõ model)", d->serial);
+        GtkWidget *lbl = gtk_label_new(NULL);
+        gtk_label_set_markup(GTK_LABEL(lbl), text);
+        gtk_label_set_xalign(GTK_LABEL(lbl), 0);
+        gtk_widget_set_margin_top(lbl, 10);
+        gtk_widget_set_margin_bottom(lbl, 10);
+        gtk_widget_set_margin_start(lbl, 12);
+        gtk_widget_set_margin_end(lbl, 12);
+        GtkWidget *row = gtk_list_box_row_new();
+        gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), lbl);
+        g_object_set_data_full(G_OBJECT(row), "serial", g_strdup(d->serial), g_free);
+        gtk_list_box_append(list, row);
     }
     g_ptr_array_free(devs, TRUE);
-
-    GtkWidget *refresh = gtk_button_new_with_label("Làm mới");
-    g_signal_connect(refresh, "clicked", G_CALLBACK(on_refresh), st);
-    gtk_box_append(GTK_BOX(box), refresh);
-
-    gtk_window_set_child(GTK_WINDOW(st->win), box);
 }
 
-static void on_activate(GtkApplication *app, gpointer user) {
-    AppState *st = user;
+static void on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user) {
+    (void)box;
+    App *app = user;
+    const char *serial = g_object_get_data(G_OBJECT(row), "serial");
+    read_settings(app);
+    new_session(app, serial); /* serial sống nhờ row-data tới khi create copy xong */
+}
 
-    st->win = gtk_application_window_new(app);
-    gtk_window_set_title(GTK_WINDOW(st->win), "RigControlNative");
-    gtk_window_set_default_size(GTK_WINDOW(st->win), 540, 960);
-    gtk_window_present(GTK_WINDOW(st->win));
+static void on_refresh(GtkButton *btn, gpointer user) {
+    GtkListBox *list = g_object_get_data(G_OBJECT(btn), "list");
+    populate_devices((App *)user, list);
+}
 
-    /* TCP hoặc serial chỉ định qua env → kết nối thẳng, bỏ qua bộ chọn. */
-    if (st->cfg.transport == RC_TRANSPORT_TCP || (st->cfg.serial && *st->cfg.serial)) {
-        connect_device(st, st->cfg.serial);
+static GtkWidget *labeled_dropdown(const char *label, const char *const *items, guint def,
+                                   GtkDropDown **out) {
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_box_append(GTK_BOX(box), gtk_label_new(label));
+    GtkWidget *dd = gtk_drop_down_new_from_strings(items);
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(dd), def);
+    gtk_widget_set_hexpand(dd, TRUE);
+    gtk_box_append(GTK_BOX(box), dd);
+    *out = GTK_DROP_DOWN(dd);
+    return box;
+}
+
+static void show_chooser(App *app) {
+    GtkWidget *win = gtk_application_window_new(app->gtk);
+    gtk_window_set_title(GTK_WINDOW(win), "RigControlNative — Chọn thiết bị");
+    gtk_window_set_default_size(GTK_WINDOW(win), 420, 520);
+
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_widget_set_margin_top(box, 18);
+    gtk_widget_set_margin_bottom(box, 18);
+    gtk_widget_set_margin_start(box, 18);
+    gtk_widget_set_margin_end(box, 18);
+
+    static const char *const size_items[] = {"Full (gốc)", "1920", "1280", "1024", "800", NULL};
+    static const char *const bitrate_items[] = {"2 Mbps", "4 Mbps", "8 Mbps", "16 Mbps", NULL};
+    gtk_box_append(GTK_BOX(box), labeled_dropdown("Kích thước:", size_items, 2, &app->dd_size));
+    gtk_box_append(GTK_BOX(box), labeled_dropdown("Bitrate:", bitrate_items, 2, &app->dd_bitrate));
+
+    GtkWidget *hint = gtk_label_new("Bấm một thiết bị để mở (mở được nhiều máy cùng lúc).");
+    gtk_label_set_xalign(GTK_LABEL(hint), 0);
+    gtk_box_append(GTK_BOX(box), hint);
+
+    GtkWidget *scroller = gtk_scrolled_window_new();
+    gtk_widget_set_vexpand(scroller, TRUE);
+    GtkWidget *list = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_NONE);
+    gtk_widget_add_css_class(list, "boxed-list");
+    g_signal_connect(list, "row-activated", G_CALLBACK(on_row_activated), app);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroller), list);
+    gtk_box_append(GTK_BOX(box), scroller);
+
+    GtkWidget *refresh = gtk_button_new_with_label("Làm mới");
+    g_object_set_data(G_OBJECT(refresh), "list", list);
+    g_signal_connect(refresh, "clicked", G_CALLBACK(on_refresh), app);
+    gtk_box_append(GTK_BOX(box), refresh);
+
+    populate_devices(app, GTK_LIST_BOX(list));
+    gtk_window_set_child(GTK_WINDOW(win), box);
+    gtk_window_present(GTK_WINDOW(win));
+}
+
+static void on_activate(GtkApplication *gtkapp, gpointer user) {
+    App *app = user;
+    app->gtk = gtkapp;
+
+    /* TCP hoặc serial chỉ định qua env → mở thẳng một phiên, bỏ qua bộ chọn. */
+    if (app->base.transport == RC_TRANSPORT_TCP || (app->base.serial && *app->base.serial)) {
+        app->sel_max_size = app->base.max_size;
+        app->sel_bit_rate = app->base.bit_rate;
+        new_session(app, app->base.serial);
         return;
     }
-
-    /* USB, chưa chỉ định: 1 máy → tự kết nối; nhiều máy → cho chọn. */
-    GPtrArray *devs = list_adb_devices();
-    guint n = devs->len;
-    char only[128] = {0};
-    if (n == 1) g_strlcpy(only, ((DevInfo *)devs->pdata[0])->serial, sizeof only);
-    g_ptr_array_free(devs, TRUE);
-
-    if (n == 1)
-        connect_device(st, only);
-    else
-        show_chooser(st);
+    show_chooser(app);
 }
 
 static int env_int(const char *name, int def) {
@@ -681,15 +770,19 @@ static int env_int(const char *name, int def) {
     return v && *v ? atoi(v) : def;
 }
 
+static void free_session(gpointer data) {
+    Session *s = data;
+    session_teardown(s);
+    g_mutex_clear(&s->lock);
+    g_free(s->serial_owned);
+    g_free(s);
+}
+
 int main(int argc, char **argv) {
     const char *tcp = g_getenv("RC_TCP_ADDR");
-    AppState st;
-    memset(&st, 0, sizeof st);
-    g_mutex_init(&st.lock);
-    atomic_init(&st.render_scheduled, 0);
-    atomic_init(&st.alive, 1);
-
-    st.cfg = (rc_config){
+    App app;
+    memset(&app, 0, sizeof app);
+    app.base = (rc_config){
         .serial = g_getenv("RC_SERIAL"),
         .transport = (tcp && *tcp) ? RC_TRANSPORT_TCP : RC_TRANSPORT_USB,
         .tcp_addr = tcp,
@@ -701,17 +794,15 @@ int main(int argc, char **argv) {
         .audio = env_int("RC_AUDIO", 1),
         .audio_codec = RC_ACODEC_OPUS,
     };
+    app.sel_max_size = app.base.max_size;
+    app.sel_bit_rate = app.base.bit_rate;
 
-    GtkApplication *app = gtk_application_new("com.rigcontrol.native", G_APPLICATION_DEFAULT_FLAGS);
-    g_signal_connect(app, "activate", G_CALLBACK(on_activate), &st);
-    int rc = g_application_run(G_APPLICATION(app), argc, argv);
+    GtkApplication *gtkapp =
+        gtk_application_new("com.rigcontrol.native", G_APPLICATION_DEFAULT_FLAGS);
+    g_signal_connect(gtkapp, "activate", G_CALLBACK(on_activate), &app);
+    int rc = g_application_run(G_APPLICATION(gtkapp), argc, argv);
 
-    atomic_store(&st.alive, 0);
-    rc_client_stop(st.client);    /* NULL-safe: join thread core → hết callback */
-    rc_client_destroy(st.client); /* NULL-safe */
-    g_object_unref(app);
-
-    for (int i = 0; i < 3; i++) g_free(st.plane[i]);
-    g_mutex_clear(&st.lock);
+    g_list_free_full(app.sessions, free_session);
+    g_object_unref(gtkapp);
     return rc;
 }
