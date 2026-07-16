@@ -13,6 +13,10 @@ endif()
 
 add_executable(rigcontrol
     main.c
+    chooser.c
+    session.c
+    render.c
+    input.c
 )
 
 target_link_libraries(rigcontrol
