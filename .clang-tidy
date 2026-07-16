@@ -1,0 +1,16 @@
+# Checks cho code C của libcore + front-end. Cần compile_commands.json (CMake tự sinh).
+# Chạy: make lint  (yêu cầu clang-tidy: sudo apt install clang-tidy)
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  cert-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -bugprone-easily-swappable-parameters,
+  -cert-err33-c
+WarningsAsErrors: ''
+HeaderFilterRegex: 'core/(src|include)/.*'
+FormatStyle: file

@@ -1,0 +1,101 @@
+/* net.c — I/O socket cấp thấp: đọc/ghi đầy đủ, listen loopback, accept, connect TCP. */
+#include "rc_internal.h"
+
+#include <errno.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <string.h>
+
+rc_status rc_net_read_full(int fd, void *buf, size_t len) {
+    uint8_t *p = buf;
+    while (len > 0) {
+        ssize_t n = read(fd, p, len);
+        if (n == 0) return RC_ERR_CONNECT; /* peer đóng */
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return RC_ERR_CONNECT;
+        }
+        p += n;
+        len -= (size_t)n;
+    }
+    return RC_OK;
+}
+
+rc_status rc_net_write_full(int fd, const void *buf, size_t len) {
+    const uint8_t *p = buf;
+    while (len > 0) {
+        ssize_t n = write(fd, p, len);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return RC_ERR_CONNECT;
+        }
+        p += n;
+        len -= (size_t)n;
+    }
+    return RC_OK;
+}
+
+static void set_low_latency(int fd) {
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+}
+
+int rc_net_listen_loopback(int *out_port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int one = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0; /* để kernel chọn cổng trống */
+
+    if (bind(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
+        close(fd);
+        return -1;
+    }
+    if (listen(fd, 2) < 0) {
+        close(fd);
+        return -1;
+    }
+
+    socklen_t sl = sizeof addr;
+    if (getsockname(fd, (struct sockaddr *)&addr, &sl) < 0) {
+        close(fd);
+        return -1;
+    }
+    if (out_port) *out_port = ntohs(addr.sin_port);
+    return fd;
+}
+
+int rc_net_accept(int listen_fd) {
+    int fd = accept(listen_fd, NULL, NULL);
+    if (fd >= 0) set_low_latency(fd);
+    return fd;
+}
+
+int rc_net_connect_tcp(const char *host, int port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        close(fd);
+        return -1;
+    }
+
+    if (connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
+        close(fd);
+        return -1;
+    }
+    set_low_latency(fd);
+    return fd;
+}

@@ -1,0 +1,23 @@
+# Build
+/build/
+/build-strict/
+/out/
+*.o
+*.a
+*.so
+compile_commands.json
+
+# Android server build
+server/build/
+server/.gradle/
+*.dex
+*.class
+rc-server
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store

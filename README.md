@@ -10,9 +10,13 @@ render + input + hardware-decode backend là viết riêng cho mỗi nền tản
 ## Đặc điểm
 
 - Mirror màn hình Android, độ trễ thấp (ưu tiên tối ưu cho gaming).
+- **Stream audio** thiết bị về desktop (Opus, giải mã bằng FFmpeg, phát qua miniaudio).
 - Transport: **USB** (qua adb, độ trễ thấp nhất) + **LAN/Wi-Fi** nội bộ.
 - Điều khiển ngược bằng **chuột + bàn phím** từ desktop.
-- Codec **H.264** (hardware decode có sẵn mọi nền tảng); H.265/AV1 để phase sau.
+- **Nút điều khiển thiết bị**: BACK / HOME / APP_SWITCH / MENU / POWER / VOLUME, cùng các
+  hành động đặc biệt (tắt–bật màn hình thiết bị, mở notification/settings panel, **xoay màn hình**).
+- **Tự theo dõi xoay màn hình** thiết bị (khung hình tự thích ứng theo độ phân giải mới).
+- Codec video **H.264** (hardware decode có sẵn mọi nền tảng); H.265/AV1 để phase sau.
 - Core C dùng chung, tái sử dụng cho mọi client.
 
 ## Kiến trúc
@@ -112,10 +116,15 @@ callback (GTK marshal bằng `g_idle_add`).
 
 ## Protocol (chi tiết trong `docs/PROTOCOL.md`)
 
-- **Video socket**: 1 byte codec-id → (tùy chọn) config packet (SPS/PPS) → các frame
-  `[PTS: int64 BE][len: uint32 BE][payload H.264]`. Không reorder, không B-frame.
-- **Control socket**: message nhỏ gọn, byte đầu là type — `MOUSE`, `SCROLL`, `KEY`, `TEXT`.
-- USB: hai socket qua `adb reverse/forward` localabstract. LAN: server listen TCP, client connect.
+- Tối đa **ba socket** mở theo thứ tự cố định: **video → [audio] → [control]**.
+- **Video**: `device_meta` → (tùy chọn) config packet (SPS/PPS) → các frame
+  `[pts_flags: u64][len: u32][payload H.264]`. Không reorder, không B-frame. Khi thiết bị xoay,
+  server gửi config+keyframe mới với kích thước mới (client tự thích ứng theo từng frame).
+- **Audio**: `audio_meta` (codec/sample_rate/channels; codec=0 nếu không khả dụng) → packet cùng
+  khung với video (Opus mặc định).
+- **Control**: message byte đầu là type — `MOUSE_MOTION/BUTTON`, `SCROLL`, `KEY` (gồm cả nút
+  BACK/HOME/POWER/VOLUME), `TEXT`, `DEVICE_ACTION` (screen off/on, panel, rotate).
+- USB: các socket qua `adb reverse` localabstract. LAN: server listen TCP, client connect.
 
 ## Tối ưu độ trễ thấp
 
@@ -130,22 +139,38 @@ callback (GTK marshal bằng `g_idle_add`).
 
 | Phase | Nội dung |
 |-------|----------|
-| 0 | Scaffolding: repo, CMake, docs, xác định deps |
-| 1 | Android `rc-server` (video-only): capture + encode + socket |
+| 0 | Scaffolding: repo, CMake, docs, protocol, xác định deps |
+| 1 | Android `rc-server`: capture + encode **video (H.264) + audio (Opus)** + socket (USB/TCP) |
 | 2 | `libcore`: adb/deploy + demux + FFmpeg decode + C API |
 | 3 | GTK front-end: render frame → mirror chạy end-to-end |
-| 4 | Control: chuột + bàn phím (inject qua InputManager) |
-| 5 | LAN transport + hardware decode (VAAPI zero-copy) |
-| 6 | Port Windows (WinUI 3) & macOS (SwiftUI), dùng chung `libcore` |
+| 4 | Control: chuột + bàn phím + nút thiết bị + DEVICE_ACTION (rotate...) |
+| 5 | Audio phía desktop: decode Opus (FFmpeg) + phát miniaudio (core) |
+| 6 | LAN transport + hardware decode (VAAPI zero-copy) |
+| 7 | Port Windows (WinUI 3) & macOS (SwiftUI), dùng chung `libcore` |
 
 ## Build & chạy (MVP — Ubuntu/GTK)
 
-Yêu cầu: `libavcodec-dev libavutil-dev`, GTK4 + EGL/GL, `adb` (platform-tools), Android
-SDK/NDK + `android.jar` (để build server). Thiết bị Android bật USB debugging.
+Yêu cầu: `libavcodec-dev libavutil-dev`, `libgtk-4-dev libepoxy-dev` + EGL/GL, `adb` (platform-tools), JDK 11+,
+Android SDK (`platforms/android-*/android.jar` + `build-tools/*/d8`) để build server. **Không cần
+NDK** (server là Java thuần). Thiết bị Android bật USB debugging.
+
+Cách nhanh nhất là dùng **Makefile** (bao quanh CMake + `build.sh` + clang tools):
 
 ```bash
-# 1. Build Android server
-cd server && ./gradlew   # → rc-server (dex)
+make deps      # in gợi ý cài dependency
+make all       # build rc-server (dex) + libcore + app GTK
+make run       # chạy app GTK
+make format    # định dạng C + Java (clang-format)
+make lint      # clang-tidy (fallback build -Werror nếu chưa cài)
+make clean     # xoá build
+make help      # xem toàn bộ target
+```
+
+Hoặc thủ công:
+
+```bash
+# 1. Build Android server (javac + d8, không cần Gradle)
+cd server && ./build.sh   # → server/rc-server (jar chứa classes.dex)
 
 # 2. Build core + GTK app
 cmake -B build && cmake --build build
@@ -155,6 +180,12 @@ adb devices               # xác nhận thiết bị
 ./build/frontends/gtk/rigcontrol
 ```
 
+### Định dạng & lint
+
+- `.clang-format` áp cho cả C (LLVM, 4-space) và Java (Google, 4-space).
+- `.clang-tidy` cho C của libcore (cần `compile_commands.json` — CMake tự sinh).
+- Cài công cụ: `sudo apt install clang-format clang-tidy`.
+
 ### Kiểm thử
 
 1. **Video**: màn hình Android hiển thị trong cửa sổ, mượt.
@@ -163,7 +194,29 @@ adb devices               # xác nhận thiết bị
 
 ## Trạng thái
 
-🚧 Đang phát triển — Phase 0 (scaffolding).
+🚧 Đang phát triển — **Phase 4**: mirror + **điều khiển** đầy đủ qua cửa sổ GTK.
+
+- **Phase 1** — Android `rc-server`: capture + encode video (H.264) và audio (Opus), mở socket
+  USB (localabstract) / TCP (LAN), gửi `device_meta`/`audio_meta`. Audio dùng `REMOTE_SUBMIX`
+  (cần Android 11+); thiết bị không hỗ trợ tự báo `ACODEC_ID_NONE`, video vẫn chạy.
+- **Phase 2** — `libcore`: `rc_client_start` tự `adb push` + reverse tunnel + chạy server rồi
+  demux → **FFmpeg H.264 decode** → giao `rc_frame` (I420) qua callback. Audio hiện chỉ *drain*
+  để không nghẽn server; decode/phát ở Phase 5.
+- **Phase 3** — front-end GTK4: `GtkGLArea` + shader YUV(I420)→RGB, frame marshal về UI thread,
+  letterbox giữ tỉ lệ. Đã kiểm chứng render pixel thật từ thiết bị. **Bộ chọn thiết bị trên UI**:
+  nhiều máy → hiện danh sách (model + serial) để chọn, một máy → tự kết nối; có nút *Làm mới*.
+  Cấu hình qua biến môi trường (`RC_SERIAL`, `RC_TCP_ADDR`, `RC_MAX_SIZE`, `RC_BIT_RATE`,
+  `RC_MAX_FPS`, `RC_AUDIO`, `RC_CONTROL`, `RC_SERVER_PATH`); đặt `RC_SERIAL`/`RC_TCP_ADDR` sẽ
+  bỏ qua bộ chọn và kết nối thẳng.
+
+- **Phase 4** — điều khiển ngược: server inject qua `InputManager`/`InputManagerGlobal`
+  (reflection, Android 14+). Chuột → cảm ứng (nhấn/kéo/thả), cuộn, bàn phím (phím thường → TEXT,
+  phím điều hướng/sửa → KEY), nút thiết bị **BACK/HOME/RECENT/POWER/VOLUME** trên thanh công cụ,
+  và **DEVICE_ACTION** (xoay qua `IWindowManager.freezeRotation`, screen off/on, panel thông báo).
+  Đã kiểm chứng end-to-end: HOME đổi foreground, vuốt mở app drawer, ROTATE đổi `user_rotation`.
+
+Còn lại: audio playback desktop (Phase 5), LAN transport + hardware decode zero-copy (Phase 6),
+port Windows/macOS (Phase 7).
 
 ## License
 
