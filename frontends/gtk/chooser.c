@@ -86,6 +86,7 @@ static void read_settings(App *app) {
     if (app->cb_audio) app->sel_audio = gtk_check_button_get_active(app->cb_audio);
     if (app->cb_viewonly) app->sel_control = !gtk_check_button_get_active(app->cb_viewonly);
     if (app->cb_fps) app->sel_show_fps = gtk_check_button_get_active(app->cb_fps);
+    if (app->cb_hwdec) app->sel_hwdec = gtk_check_button_get_active(app->cb_hwdec);
 }
 
 static void on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user) {
@@ -93,7 +94,7 @@ static void on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user)
     App *app = user;
     const char *serial = g_object_get_data(G_OBJECT(row), "serial");
     read_settings(app);
-    session_new(app, serial); /* serial sống nhờ row-data tới khi create copy xong */
+    session_new(app, serial, NULL); /* serial sống nhờ row-data tới khi create copy xong */
 }
 
 static void on_refresh(GtkButton *btn, gpointer user) {
@@ -101,12 +102,26 @@ static void on_refresh(GtkButton *btn, gpointer user) {
     populate_devices((App *)user, list);
 }
 
-/* Mở phiên tới thiết bị wireless adb; core tự `adb connect` vì serial chứa ':'. */
+/*
+ * Mở phiên tới thiết bị wireless adb (core tự `adb connect` vì serial chứa ':').
+ * Tick "LAN trực tiếp" → stream TCP thẳng tới host:27183 (adb chỉ dùng để deploy server),
+ * không đi vòng qua adb tunnel — độ trễ/overhead thấp hơn.
+ */
 static void wifi_session_open(App *app, GtkEntry *entry) {
     const char *addr = gtk_editable_get_text(GTK_EDITABLE(entry));
     if (!addr || !*addr) return;
     read_settings(app);
-    session_new(app, addr);
+    if (app->cb_lan && gtk_check_button_get_active(app->cb_lan)) {
+        char host[128];
+        const char *colon = strrchr(addr, ':');
+        size_t n = colon ? (size_t)(colon - addr) : strlen(addr);
+        if (n == 0 || n >= sizeof host) return;
+        memcpy(host, addr, n);
+        host[n] = '\0'; /* không kèm port → core dùng cổng stream mặc định 27183 */
+        session_new(app, addr, host);
+    } else {
+        session_new(app, addr, NULL);
+    }
 }
 
 static void on_wifi_activate(GtkEntry *entry, gpointer user) {
@@ -134,7 +149,7 @@ static GtkWidget *labeled_dropdown(const char *label, const char *const *items, 
 void chooser_show(App *app) {
     GtkWidget *win = gtk_application_window_new(app->gtk);
     gtk_window_set_title(GTK_WINDOW(win), "RigControlNative — Chọn thiết bị");
-    gtk_window_set_default_size(GTK_WINDOW(win), 420, 520);
+    gtk_window_set_default_size(GTK_WINDOW(win), 500, 640);
 
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     gtk_widget_set_margin_top(box, 18);
@@ -165,6 +180,12 @@ void chooser_show(App *app) {
     app->cb_fps = GTK_CHECK_BUTTON(cb_fps);
     gtk_box_append(GTK_BOX(box), cb_fps);
 
+    /* Decode bằng GPU (VAAPI) nếu máy hỗ trợ; không có thì core tự dùng software. */
+    GtkWidget *cb_hwdec = gtk_check_button_new_with_label("HW decode (VAAPI)");
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(cb_hwdec), app->sel_hwdec != 0);
+    app->cb_hwdec = GTK_CHECK_BUTTON(cb_hwdec);
+    gtk_box_append(GTK_BOX(box), cb_hwdec);
+
     GtkWidget *hint = gtk_label_new("Bấm một thiết bị để mở (mở được nhiều máy cùng lúc).");
     gtk_label_set_xalign(GTK_LABEL(hint), 0);
     gtk_box_append(GTK_BOX(box), hint);
@@ -194,6 +215,12 @@ void chooser_show(App *app) {
     g_object_set_data(G_OBJECT(wifi_btn), "entry", entry);
     g_signal_connect(wifi_btn, "clicked", G_CALLBACK(on_wifi_clicked), app);
     gtk_box_append(GTK_BOX(wifi_row), wifi_btn);
+    GtkWidget *cb_lan = gtk_check_button_new_with_label("LAN trực tiếp");
+    gtk_widget_set_tooltip_text(cb_lan,
+                                "Stream TCP thẳng tới thiết bị (cổng 27183), adb chỉ để deploy "
+                                "server — nhẹ hơn adb tunnel");
+    app->cb_lan = GTK_CHECK_BUTTON(cb_lan);
+    gtk_box_append(GTK_BOX(wifi_row), cb_lan);
     gtk_box_append(GTK_BOX(box), wifi_row);
 
     populate_devices(app, GTK_LIST_BOX(list));

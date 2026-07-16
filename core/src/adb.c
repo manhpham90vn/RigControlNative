@@ -107,7 +107,7 @@ static const char *codec_name(rc_codec codec) {
 }
 
 rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, const char *socket_name,
-                            int *out_pid) {
+                            int tcp_port, int *out_pid) {
     if (!cfg) return RC_ERR_INVALID_ARG;
 
     /* Server chạy foreground trong `adb shell` và stream tới khi socket đóng → KHÔNG waitpid,
@@ -115,7 +115,7 @@ rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, const char
     char classpath[64];
     snprintf(classpath, sizeof classpath, "CLASSPATH=%s", RC_SERVER_REMOTE_PATH);
     char kv_max_size[32], kv_bit_rate[32], kv_max_fps[32], kv_codec[24], kv_audio[16],
-        kv_control[16], kv_tcp[16], kv_socket[96];
+        kv_control[16], kv_tcp[16], kv_port[24], kv_socket[96];
     snprintf(kv_socket, sizeof kv_socket, "socket_name=%s",
              socket_name ? socket_name : RC_LOCALABSTRACT_NAME);
     snprintf(kv_max_size, sizeof kv_max_size, "max_size=%d", cfg->max_size);
@@ -125,8 +125,10 @@ rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, const char
     snprintf(kv_codec, sizeof kv_codec, "codec=%s", codec_name(cfg->codec));
     snprintf(kv_audio, sizeof kv_audio, "audio=%s", cfg->audio ? "true" : "false");
     snprintf(kv_control, sizeof kv_control, "control=%s", cfg->control ? "true" : "false");
-    /* USB deploy dùng reverse tunnel → server connect localabstract (tcp=false). */
-    snprintf(kv_tcp, sizeof kv_tcp, "tcp=false");
+    /* tcp_port > 0 → server listen TCP (LAN trực tiếp); ngược lại reverse tunnel qua
+     * localabstract (tcp=false). */
+    snprintf(kv_tcp, sizeof kv_tcp, "tcp=%s", tcp_port > 0 ? "true" : "false");
+    snprintf(kv_port, sizeof kv_port, "port=%d", tcp_port);
 
     const char *a[24];
     int i = prefix_serial(serial, a, 24);
@@ -143,6 +145,7 @@ rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, const char
     a[i++] = kv_audio;
     a[i++] = kv_control;
     a[i++] = kv_tcp;
+    if (tcp_port > 0) a[i++] = kv_port;
     a[i] = NULL;
 
     pid_t pid;

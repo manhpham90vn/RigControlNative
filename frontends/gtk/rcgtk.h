@@ -23,6 +23,7 @@ typedef struct {
     rc_client *client;
     rc_config cfg;      /* cấu hình phiên */
     char *serial_owned; /* serial của phiên (sở hữu) */
+    char *tcp_owned;    /* "ip[:port]" LAN trực tiếp (sở hữu); NULL = qua adb */
     int torn;           /* đã dừng client chưa (tránh double-free) */
     GtkWidget *win;
     GtkWidget *bar; /* thanh nút điều khiển (đo chiều cao khi resize cửa sổ) */
@@ -30,13 +31,15 @@ typedef struct {
 
     /* GL objects (chỉ đụng trên UI thread) */
     GLuint prog, vao, vbo, tex[3];
-    GLint u_tex[3], u_cmat, u_yoff;
+    GLint u_tex[3], u_cmat, u_yoff, u_nv12;
     int tex_w[3], tex_h[3]; /* kích thước đã cấp cho từng texture */
+    GLenum tex_ifmt[3];     /* internal format đã cấp (R8 / RG8) */
 
     /* Frame chờ upload — bảo vệ bởi lock */
     GMutex lock;
     int have_pending;
     int vw, vh;            /* kích thước video hiện tại */
+    int pixfmt;            /* rc_pixfmt của frame chờ upload (I420 sw / NV12 hwdec) */
     int full_range, bt709; /* thông tin màu của frame gần nhất */
     guint8 *plane[3];      /* Y, U, V giữ nguyên stride của decoder (copy 1 memcpy) */
     int pstride[3];        /* stride từng plane; GL upload qua UNPACK_ROW_LENGTH */
@@ -66,11 +69,14 @@ struct App {
     int sel_audio;
     int sel_control;
     int sel_show_fps;
+    int sel_hwdec;
     GtkDropDown *dd_size; /* NULL nếu kết nối thẳng qua env */
     GtkDropDown *dd_bitrate;
     GtkCheckButton *cb_audio;
     GtkCheckButton *cb_viewonly;
     GtkCheckButton *cb_fps;
+    GtkCheckButton *cb_hwdec;
+    GtkCheckButton *cb_lan; /* ô Wi-Fi: stream LAN trực tiếp thay vì adb tunnel */
     GList *sessions; /* Session* — giải phóng khi thoát app */
 };
 
@@ -90,8 +96,10 @@ GtkWidget *input_create_navbar(Session *st);
 void input_attach(Session *st);
 
 /* session.c */
-/* Mở một phiên mới trong cửa sổ riêng. serial: NULL = mặc định / TCP. */
-void session_new(App *app, const char *serial);
+/* Mở một phiên mới trong cửa sổ riêng. serial: NULL = thiết bị adb mặc định.
+ * tcp_addr != NULL → transport TCP (LAN trực tiếp) tới "ip[:port]"; kèm serial thì core
+ * tự deploy server qua adb trước khi connect. */
+void session_new(App *app, const char *serial, const char *tcp_addr);
 /* GDestroyNotify cho App.sessions. */
 void session_free(gpointer data);
 

@@ -50,19 +50,26 @@ static rc_status parse_addr(const char *addr, char *host, size_t host_sz, int *p
     return RC_OK;
 }
 
+/* Serial dạng "ip:port" (wireless adb) → adb connect trước; idempotent nếu đã kết nối. */
+static rc_status ensure_adb_device(rc_client *c) {
+    const char *serial = c->cfg.serial;
+    if (serial && strchr(serial, ':')) {
+        rc_status r = rc_adb_connect(serial);
+        if (r != RC_OK) {
+            rc_emit_status(c, r, "adb connect thất bại (kiểm tra ip:port / adb tcpip)");
+            return r;
+        }
+    }
+    return RC_OK;
+}
+
 static rc_status deploy_usb(rc_client *c) {
     const char *serial = c->cfg.serial;
 
-    /* Serial dạng "ip:port" (wireless adb) → adb connect trước; idempotent nếu đã kết nối. */
-    if (serial && strchr(serial, ':')) {
-        rc_status cr = rc_adb_connect(serial);
-        if (cr != RC_OK) {
-            rc_emit_status(c, cr, "adb connect thất bại (kiểm tra ip:port / adb tcpip)");
-            return cr;
-        }
-    }
+    rc_status r = ensure_adb_device(c);
+    if (r != RC_OK) return r;
 
-    rc_status r = rc_adb_push(serial, server_local_path(), RC_SERVER_REMOTE_PATH);
+    r = rc_adb_push(serial, server_local_path(), RC_SERVER_REMOTE_PATH);
     if (r != RC_OK) {
         rc_emit_status(c, r, "adb push rc-server thất bại (kiểm tra RC_SERVER_PATH / thiết bị)");
         return r;
@@ -78,7 +85,7 @@ static rc_status deploy_usb(rc_client *c) {
         return r;
     }
 
-    r = rc_adb_run_server(serial, &c->cfg, c->socket_name, &c->server_pid);
+    r = rc_adb_run_server(serial, &c->cfg, c->socket_name, 0, &c->server_pid);
     if (r != RC_OK) {
         rc_emit_status(c, r, "không chạy được rc-server (app_process)");
         return r;
@@ -104,26 +111,58 @@ static rc_status deploy_usb(rc_client *c) {
     return RC_OK;
 }
 
+/* Connect TCP có retry: server vừa deploy cần thời gian mở cổng listen. */
+static int connect_retry(const char *host, int port, int attempts, int delay_ms) {
+    for (int i = 0; i < attempts; i++) {
+        int fd = rc_net_connect_tcp(host, port);
+        if (fd >= 0) return fd;
+        usleep((useconds_t)delay_ms * 1000);
+    }
+    return -1;
+}
+
+/*
+ * LAN trực tiếp: nếu có serial → tự push + chạy server (tcp=true) qua adb rồi connect thẳng
+ * host:port (stream không đi qua adb tunnel). Không có serial → server đã chạy sẵn, chỉ connect.
+ */
 static rc_status deploy_tcp(rc_client *c) {
     char host[128];
     int port = 0;
     rc_status r = parse_addr(c->cfg.tcp_addr, host, sizeof host, &port);
     if (r != RC_OK) {
-        rc_emit_status(c, r, "tcp_addr không hợp lệ (cần \"ip:port\")");
+        rc_emit_status(c, r, "tcp_addr không hợp lệ (cần \"ip[:port]\")");
         return r;
     }
 
-    c->video_fd = rc_net_connect_tcp(host, port);
+    int deployed = 0;
+    if (c->cfg.serial && *c->cfg.serial) {
+        r = ensure_adb_device(c);
+        if (r != RC_OK) return r;
+        r = rc_adb_push(c->cfg.serial, server_local_path(), RC_SERVER_REMOTE_PATH);
+        if (r != RC_OK) {
+            rc_emit_status(c, r, "adb push rc-server thất bại (kiểm tra RC_SERVER_PATH)");
+            return r;
+        }
+        r = rc_adb_run_server(c->cfg.serial, &c->cfg, NULL, port, &c->server_pid);
+        if (r != RC_OK) {
+            rc_emit_status(c, r, "không chạy được rc-server (app_process)");
+            return r;
+        }
+        deployed = 1;
+    }
+
+    /* Vừa deploy → chờ server listen (tối đa ~10s); server có sẵn → thử 1 lần. */
+    c->video_fd = connect_retry(host, port, deployed ? 40 : 1, 250);
     if (c->video_fd < 0) {
         rc_emit_status(c, RC_ERR_CONNECT, "connect video TCP thất bại");
         return RC_ERR_CONNECT;
     }
     if (c->cfg.audio) {
-        c->audio_fd = rc_net_connect_tcp(host, port);
+        c->audio_fd = connect_retry(host, port, 4, 250);
         if (c->audio_fd < 0) return RC_ERR_CONNECT;
     }
     if (c->cfg.control) {
-        c->control_fd = rc_net_connect_tcp(host, port);
+        c->control_fd = connect_retry(host, port, 4, 250);
         if (c->control_fd < 0) return RC_ERR_CONNECT;
     }
     return RC_OK;

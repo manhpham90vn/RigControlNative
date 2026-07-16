@@ -15,19 +15,26 @@ static const char *VERT_BODY =
     "out vec2 v_uv;\n"
     "void main() { v_uv = tex; gl_Position = vec4(pos, 0.0, 1.0); }\n";
 
-/* YUV→RGB với ma trận màu cấp qua uniform (BT.601/709, limited/full-range theo frame). */
+/* YUV→RGB với ma trận màu cấp qua uniform (BT.601/709, limited/full-range theo frame).
+ * nv12=1: chroma đan xen trong u_tex (RG8, từ hwdec); nv12=0: I420 3 plane R8. */
 static const char *FRAG_BODY =
     "uniform sampler2D y_tex;\n"
     "uniform sampler2D u_tex;\n"
     "uniform sampler2D v_tex;\n"
     "uniform mat3 cmat;\n"
     "uniform float y_off;\n"
+    "uniform int nv12;\n"
     "in vec2 v_uv;\n"
     "out vec4 frag;\n"
     "void main() {\n"
-    "  vec3 yuv = vec3(texture(y_tex, v_uv).r - y_off,\n"
-    "                  texture(u_tex, v_uv).r - 0.5,\n"
-    "                  texture(v_tex, v_uv).r - 0.5);\n"
+    "  vec3 yuv;\n"
+    "  yuv.x = texture(y_tex, v_uv).r - y_off;\n"
+    "  if (nv12 == 1) {\n"
+    "    yuv.yz = texture(u_tex, v_uv).rg - vec2(0.5);\n"
+    "  } else {\n"
+    "    yuv.y = texture(u_tex, v_uv).r - 0.5;\n"
+    "    yuv.z = texture(v_tex, v_uv).r - 0.5;\n"
+    "  }\n"
     "  frag = vec4(cmat * yuv, 1.0);\n"
     "}\n";
 
@@ -112,6 +119,7 @@ static void on_realize(GtkGLArea *area, gpointer user) {
     st->u_tex[2] = glGetUniformLocation(st->prog, "v_tex");
     st->u_cmat = glGetUniformLocation(st->prog, "cmat");
     st->u_yoff = glGetUniformLocation(st->prog, "y_off");
+    st->u_nv12 = glGetUniformLocation(st->prog, "nv12");
 
     static const float verts[] = {
         /* pos      tex (v lật để gốc ảnh nằm trên) */
@@ -138,6 +146,7 @@ static void on_realize(GtkGLArea *area, gpointer user) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         st->tex_w[i] = st->tex_h[i] = 0;
+        st->tex_ifmt[i] = 0;
     }
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 }
@@ -161,18 +170,20 @@ static void on_resize(GtkGLArea *area, int width, int height, gpointer user) {
     st->fb_h = height;
 }
 
-/* Upload 1 plane vào texture (stride qua UNPACK_ROW_LENGTH), cấp lại storage nếu đổi cỡ. */
-static void upload_plane(Session *st, int i, int unit, const guint8 *data, int stride, int w,
-                         int h) {
+/* Upload 1 plane vào texture (stride tính theo PIXEL qua UNPACK_ROW_LENGTH), cấp lại storage
+ * nếu đổi kích thước hoặc format (R8 cho plane rời, RG8 cho chroma NV12 đan xen). */
+static void upload_plane(Session *st, int i, int unit, const guint8 *data, int stride_px, int w,
+                         int h, GLenum ifmt, GLenum fmt) {
     glActiveTexture(GL_TEXTURE0 + unit);
     glBindTexture(GL_TEXTURE_2D, st->tex[i]);
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, stride);
-    if (st->tex_w[i] != w || st->tex_h[i] != h) {
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, data);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, stride_px);
+    if (st->tex_w[i] != w || st->tex_h[i] != h || st->tex_ifmt[i] != ifmt) {
+        glTexImage2D(GL_TEXTURE_2D, 0, ifmt, w, h, 0, fmt, GL_UNSIGNED_BYTE, data);
         st->tex_w[i] = w;
         st->tex_h[i] = h;
+        st->tex_ifmt[i] = ifmt;
     } else {
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RED, GL_UNSIGNED_BYTE, data);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, fmt, GL_UNSIGNED_BYTE, data);
     }
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 }
@@ -187,11 +198,18 @@ static gboolean on_render(GtkGLArea *area, GdkGLContext *ctx, gpointer user) {
 
     g_mutex_lock(&st->lock);
     int vw = st->vw, vh = st->vh;
+    int nv12 = (st->pixfmt == RC_PIX_NV12);
     int full_range = st->full_range, bt709 = st->bt709;
     if (st->have_pending && vw > 0 && vh > 0) {
-        upload_plane(st, 0, 0, st->plane[0], st->pstride[0], vw, vh);
-        upload_plane(st, 1, 1, st->plane[1], st->pstride[1], vw / 2, vh / 2);
-        upload_plane(st, 2, 2, st->plane[2], st->pstride[2], vw / 2, vh / 2);
+        upload_plane(st, 0, 0, st->plane[0], st->pstride[0], vw, vh, GL_R8, GL_RED);
+        if (nv12) {
+            /* Chroma UV đan xen: texture RG8 (w/2 × h/2); stride byte → pixel RG = /2. */
+            upload_plane(st, 1, 1, st->plane[1], st->pstride[1] / 2, vw / 2, vh / 2, GL_RG8,
+                         GL_RG);
+        } else {
+            upload_plane(st, 1, 1, st->plane[1], st->pstride[1], vw / 2, vh / 2, GL_R8, GL_RED);
+            upload_plane(st, 2, 2, st->plane[2], st->pstride[2], vw / 2, vh / 2, GL_R8, GL_RED);
+        }
         st->have_pending = 0;
     }
     g_mutex_unlock(&st->lock);
@@ -221,6 +239,7 @@ static gboolean on_render(GtkGLArea *area, GdkGLContext *ctx, gpointer user) {
     color_matrix(bt709, full_range, cmat, &y_off);
     glUniformMatrix3fv(st->u_cmat, 1, GL_FALSE, cmat);
     glUniform1f(st->u_yoff, y_off);
+    glUniform1i(st->u_nv12, nv12);
     glBindVertexArray(st->vao);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     return TRUE;
@@ -285,17 +304,23 @@ static void copy_plane(Session *st, int i, const uint8_t *src, int stride, int w
 /* Chạy trên thread nội bộ của core. */
 void render_on_frame(const rc_frame *f, void *user) {
     Session *st = user;
-    if (f->format != RC_PIX_I420) return; /* MVP: chỉ I420 (sw H.264) */
+    if (f->format != RC_PIX_I420 && f->format != RC_PIX_NV12) return;
 
     g_mutex_lock(&st->lock);
     int size_changed = (st->vw != f->width || st->vh != f->height);
     st->vw = f->width;
     st->vh = f->height;
+    st->pixfmt = f->format;
     st->full_range = f->full_range;
     st->bt709 = f->bt709;
     copy_plane(st, 0, f->data[0], f->linesize[0], f->width, f->height);
-    copy_plane(st, 1, f->data[1], f->linesize[1], f->width / 2, f->height / 2);
-    copy_plane(st, 2, f->data[2], f->linesize[2], f->width / 2, f->height / 2);
+    if (f->format == RC_PIX_NV12) {
+        /* Plane UV đan xen: f->width byte mỗi dòng (w/2 cặp UV), h/2 dòng. */
+        copy_plane(st, 1, f->data[1], f->linesize[1], f->width, f->height / 2);
+    } else {
+        copy_plane(st, 1, f->data[1], f->linesize[1], f->width / 2, f->height / 2);
+        copy_plane(st, 2, f->data[2], f->linesize[2], f->width / 2, f->height / 2);
+    }
     st->have_pending = 1;
     g_mutex_unlock(&st->lock);
 

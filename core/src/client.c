@@ -154,12 +154,16 @@ rc_status rc_client_start(rc_client *c) {
     atomic_store(&c->have_meta, 1);
     rc_emit_status(c, RC_OK, c->meta.device_name);
 
-    c->decoder = rc_decoder_create(c->cfg.codec);
+    c->decoder = rc_decoder_create(c->cfg.codec, c->cfg.hw_decode);
     if (!c->decoder) {
         rc_emit_status(c, RC_ERR_DECODE, "khởi tạo decoder thất bại");
         rc_server_teardown(c);
         return RC_ERR_DECODE;
     }
+    if (c->cfg.hw_decode)
+        rc_emit_status(c, RC_OK,
+                       rc_decoder_is_hw((rc_decoder *)c->decoder) ? "decoder: VAAPI (hw)"
+                                                                  : "decoder: software (VAAPI không khả dụng)");
 
     atomic_store(&c->running, 1);
 

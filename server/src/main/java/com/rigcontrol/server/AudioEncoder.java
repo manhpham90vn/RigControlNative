@@ -30,14 +30,8 @@ public final class AudioEncoder {
     private static final int AUDIO_BIT_RATE = 128_000;
     private static final long DEQUEUE_TIMEOUT_US = 5_000;
 
-    private final Options options;
-
     private AudioRecord recorder;
     private MediaCodec codec;
-
-    public AudioEncoder(Options options) {
-        this.options = options;
-    }
 
     /** true nếu nền tảng có thể capture audio phát ra (Android 11+). */
     public boolean isAvailable() {

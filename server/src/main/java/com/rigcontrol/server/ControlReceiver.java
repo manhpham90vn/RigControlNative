@@ -77,7 +77,7 @@ public final class ControlReceiver implements Runnable {
             case Protocol.CTRL_MOUSE_BUTTON: {
                 int action = in.readUnsignedByte();
                 int button = in.readInt();
-                int buttons = in.readInt();
+                in.readInt(); // buttons bitmask: đọc để giữ khung protocol, hiện chưa dùng
                 float x = in.readFloat();
                 float y = in.readFloat();
                 if (button == Protocol.BUTTON_LEFT) {

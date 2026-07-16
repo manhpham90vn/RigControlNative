@@ -27,7 +27,7 @@ public final class Server {
                     encoder.getHeight(), deviceName());
 
                 if (options.audio && conn.getAudioOutput() != null) {
-                    Thread at = new Thread(() -> runAudio(options, conn), "rc-audio");
+                    Thread at = new Thread(() -> runAudio(conn), "rc-audio");
                     at.setDaemon(true);
                     at.start();
                 }
@@ -55,8 +55,8 @@ public final class Server {
      * Chạy toàn bộ pipeline audio trên thread riêng: quyết định codec, gửi audio_meta, stream.
      * Nếu không khả dụng → gửi ACODEC_ID_NONE và giữ socket mở (video không bị ảnh hưởng).
      */
-    private static void runAudio(Options options, DesktopConnection conn) {
-        AudioEncoder audio = new AudioEncoder(options);
+    private static void runAudio(DesktopConnection conn) {
+        AudioEncoder audio = new AudioEncoder();
         int codecId = Protocol.ACODEC_ID_NONE;
         boolean ready = false;
         if (audio.isAvailable()) {

@@ -51,14 +51,18 @@ typedef enum {
 typedef struct {
     const char *serial; /* adb serial; NULL = thiết bị mặc định */
     rc_transport transport;
-    const char *tcp_addr; /* "ip:port"; chỉ dùng khi transport == RC_TRANSPORT_TCP */
-    int max_size;         /* giới hạn cạnh dài (px); 0 = full */
-    int bit_rate;         /* bit/s; 0 = mặc định core */
-    int max_fps;          /* 0 = không giới hạn */
+    /* "ip[:port]" (port mặc định 27183); dùng khi transport == RC_TRANSPORT_TCP.
+     * Nếu serial cũng được đặt → core tự push + chạy server (tcp=true) qua adb rồi mới
+     * connect; nếu serial NULL → giả định server đã chạy sẵn trên thiết bị. */
+    const char *tcp_addr;
+    int max_size; /* giới hạn cạnh dài (px); 0 = full */
+    int bit_rate; /* bit/s; 0 = mặc định core */
+    int max_fps;  /* 0 = không giới hạn */
     rc_codec codec;
-    int control; /* != 0 để bật kênh điều khiển chuột/bàn phím */
-    int audio;   /* != 0 để stream + phát audio thiết bị */
+    int control;   /* != 0 để bật kênh điều khiển chuột/bàn phím */
+    int audio;     /* != 0 để stream + phát audio thiết bị */
     rc_acodec audio_codec;
+    int hw_decode; /* != 0 → thử hardware decode (VAAPI); tự fallback software */
 } rc_config;
 
 /* ---- Frame giải mã giao cho UI ----

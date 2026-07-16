@@ -112,12 +112,8 @@ public final class ScreenEncoder {
         byte[] buffer = new byte[PACKET_HDR + 256 * 1024];
         while (true) {
             int index = codec.dequeueOutputBuffer(bufferInfo, DEQUEUE_TIMEOUT_US);
-            if (index == MediaCodec.INFO_TRY_AGAIN_LATER
-                || index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED
-                || index == MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED) {
-                continue;
-            }
             if (index < 0) {
+                // Mọi mã INFO_* (TRY_AGAIN/FORMAT_CHANGED/...) đều âm: chưa có output buffer.
                 continue;
             }
             try {

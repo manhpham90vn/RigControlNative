@@ -102,9 +102,10 @@ rc_status rc_adb_connect(const char *addr);
 rc_status rc_adb_push(const char *serial, const char *local, const char *remote);
 rc_status rc_adb_reverse(const char *serial, const char *remote, int local_port);
 rc_status rc_adb_reverse_remove(const char *serial, const char *remote);
-/* Chạy server qua app_process (nền, không chặn); trả pid tiến trình adb qua *out_pid. */
+/* Chạy server qua app_process (nền, không chặn); trả pid tiến trình adb qua *out_pid.
+ * tcp_port > 0 → server listen TCP cổng đó (LAN); ngược lại connect localabstract socket_name. */
 rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, const char *socket_name,
-                            int *out_pid);
+                            int tcp_port, int *out_pid);
 #define RC_SERVER_REMOTE_PATH "/data/local/tmp/rc-server"
 
 /* server_deploy.c — đẩy + chạy rc-server, thiết lập tunnel, trả về video/control fd */
@@ -121,7 +122,9 @@ rc_status rc_demux_read_packet(int fd, uint8_t **buf, size_t *cap, size_t *out_l
 
 /* decoder.c — bọc FFmpeg libavcodec */
 typedef struct rc_decoder rc_decoder;
-rc_decoder *rc_decoder_create(rc_codec codec);
+/* hw != 0 → thử hardware decode VAAPI (output NV12 qua hwdownload); lỗi → fallback software. */
+rc_decoder *rc_decoder_create(rc_codec codec, int hw);
+int rc_decoder_is_hw(const rc_decoder *d);
 void rc_decoder_destroy(rc_decoder *d);
 /* Nạp packet, nếu ra frame thì gọi cb. is_config=1 cho packet SPS/PPS. */
 rc_status rc_decoder_feed(rc_decoder *d, const uint8_t *data, size_t len, int is_config,

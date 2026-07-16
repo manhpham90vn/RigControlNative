@@ -34,8 +34,11 @@ accept/connect đúng số socket và đúng thứ tự.
 
 ### 1.2 TCP / LAN (Wi-Fi nội bộ)
 
-- Server listen trực tiếp trên `0.0.0.0:<port>` (mặc định `27183`).
+- Server listen trực tiếp trên `0.0.0.0:<port>` (mặc định `27183`; server chạy với `tcp=true port=<port>`).
 - Desktop connect tới `tcp:<device-ip>:<port>`, mở **video trước, control sau** (cùng thứ tự như USB).
+- Deploy: nếu client biết adb serial (kể cả wireless adb `ip:5555`), client tự `adb push` + chạy
+  server (`tcp=true`) rồi connect trực tiếp — stream **không** đi qua adb tunnel. Không có serial
+  → giả định server đã chạy sẵn.
 - Lấy IP thiết bị: người dùng nhập tay, hoặc dùng `adb tcpip` + `adb shell ip route` để hỗ trợ.
 
 Trong cả hai chế độ, **thứ tự stream không đổi**: video là kết nối/luồng đầu tiên, control là thứ hai.

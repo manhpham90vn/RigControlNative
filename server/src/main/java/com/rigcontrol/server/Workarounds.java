@@ -17,7 +17,12 @@ import java.lang.reflect.Field;
 public final class Workarounds {
     private Workarounds() {}
 
-    /** AudioRecord cần một Looper trên thread khởi tạo. */
+    /**
+     * AudioRecord cần một Looper trên thread khởi tạo. Dùng prepareMainLooper() (deprecated) thay
+     * vì prepare() một cách CÓ CHỦ ĐÍCH: một số API nội bộ tra Looper.getMainLooper() — chỉ được
+     * set bởi prepareMainLooper. Không có thay thế cho ngữ cảnh app_process (kỹ thuật như scrcpy).
+     */
+    @SuppressWarnings("deprecation")
     public static void prepareMainLooper() {
         if (Looper.myLooper() == null) {
             Looper.prepareMainLooper();

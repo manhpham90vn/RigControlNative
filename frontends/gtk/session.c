@@ -78,7 +78,7 @@ static void on_session_destroy(GtkWidget *win, gpointer user) {
     session_teardown((Session *)user);
 }
 
-void session_new(App *app, const char *serial) {
+void session_new(App *app, const char *serial, const char *tcp_addr) {
     Session *s = g_new0(Session, 1);
     s->app = app;
     g_mutex_init(&s->lock);
@@ -91,15 +91,22 @@ void session_new(App *app, const char *serial) {
     s->cfg.bit_rate = app->sel_bit_rate;
     s->cfg.audio = app->sel_audio;
     s->cfg.control = app->sel_control;
+    s->cfg.hw_decode = app->sel_hwdec;
     s->show_fps = app->sel_show_fps;
     s->serial_owned = serial ? g_strdup(serial) : NULL;
     s->cfg.serial = s->serial_owned;
+    s->tcp_owned = tcp_addr ? g_strdup(tcp_addr) : NULL;
+    if (s->tcp_owned) {
+        s->cfg.transport = RC_TRANSPORT_TCP;
+        s->cfg.tcp_addr = s->tcp_owned;
+    }
 
     s->client = rc_client_create(&s->cfg);
     if (!s->client) {
         g_warning("Không tạo được rc_client");
         g_mutex_clear(&s->lock);
         g_free(s->serial_owned);
+        g_free(s->tcp_owned);
         g_free(s);
         return;
     }
@@ -108,9 +115,11 @@ void session_new(App *app, const char *serial) {
 
     s->win = gtk_application_window_new(app->gtk);
     char title[192];
-    const char *tag = serial ? serial
-                             : (s->cfg.transport == RC_TRANSPORT_TCP ? s->cfg.tcp_addr : "default");
-    g_snprintf(title, sizeof title, "RigControlNative — %s", tag ? tag : "default");
+    const char *tag = s->tcp_owned            ? s->tcp_owned
+                      : serial                ? serial
+                      : (s->cfg.transport == RC_TRANSPORT_TCP ? s->cfg.tcp_addr : "default");
+    g_snprintf(title, sizeof title, "RigControlNative — %s%s", tag ? tag : "default",
+               s->tcp_owned ? " (LAN)" : "");
     gtk_window_set_title(GTK_WINDOW(s->win), title);
     gtk_window_set_default_size(GTK_WINDOW(s->win), 540, 960);
     g_signal_connect(s->win, "destroy", G_CALLBACK(on_session_destroy), s);
@@ -128,5 +137,6 @@ void session_free(gpointer data) {
     session_teardown(s);
     g_mutex_clear(&s->lock);
     g_free(s->serial_owned);
+    g_free(s->tcp_owned);
     g_free(s);
 }

@@ -194,7 +194,7 @@ adb devices               # xác nhận thiết bị
 
 ## Trạng thái
 
-🚧 Đang phát triển — **Phase 5**: mirror video + **audio** + điều khiển đầy đủ qua cửa sổ GTK.
+🚧 Đang phát triển — **Phase 6**: LAN transport trực tiếp + hardware decode (VAAPI).
 
 - **Phase 1** — Android `rc-server`: capture + encode video (H.264) và audio (Opus), mở socket
   USB (localabstract) / TCP (LAN), gửi `device_meta`/`audio_meta`. Audio dùng `REMOTE_SUBMIX`
@@ -224,7 +224,13 @@ adb devices               # xác nhận thiết bị
 > Backend audio hiện dùng **ALSA** (Ubuntu MVP); chuyển sang **miniaudio** (cross-platform) khi
 > port Windows/macOS — `rc_audio` đã trừu tượng hoá sẵn.
 
-Còn lại: LAN transport + hardware decode zero-copy (Phase 6), port Windows/macOS (Phase 7).
+- **Phase 6** — LAN transport trực tiếp: transport TCP tự deploy server (`tcp=true`) qua adb rồi
+  stream thẳng `ip:27183` không đi vòng adb tunnel (UI: tick *LAN trực tiếp* ở ô Wi-Fi; env:
+  `RC_SERIAL` + `RC_TCP_ADDR`). Hardware decode **VAAPI** (`RC_HWDEC=1` / checkbox): decode trên
+  GPU → hwdownload NV12 (render đã hỗ trợ NV12 qua texture RG8); máy không có VAAPI tự fallback
+  software. Zero-copy dmabuf → GL để phase sau.
+
+Còn lại: zero-copy dmabuf (VAAPI → EGLImage), port Windows/macOS (Phase 7).
 
 ## License
 
