@@ -53,11 +53,12 @@ typedef struct {
 
     int fb_w, fb_h; /* kích thước framebuffer (px) từ signal resize */
 
-    /* Đo FPS (bật qua checkbox/env): đếm frame tới, timer 1s hiện lên overlay */
+    /* Đo FPS (bật qua checkbox/env): đếm frame tới, timer 1s ghép vào tiêu đề cửa sổ */
     int show_fps;
     atomic_int frame_count;
-    GtkWidget *fps_label;
     guint fps_timer;
+    guint title_timer;    /* poll đường stream thực tế từ core → cập nhật tiêu đề rồi tự dừng */
+    char title_base[160]; /* "RigControlNative — <tag> (<đường stream>)"; fps_tick ghép thêm */
 
     /* Trạng thái input (UI thread) */
     uint32_t mouse_buttons; /* bitmask RC_BUTTON_* đang giữ */
@@ -78,8 +79,7 @@ struct App {
     GtkCheckButton *cb_audio;
     GtkCheckButton *cb_control; /* tick = bật điều khiển; bỏ tick = chỉ xem */
     GtkCheckButton *cb_fps;
-    GtkCheckButton *cb_lan; /* ô Wi-Fi: stream LAN trực tiếp thay vì adb tunnel */
-    GList *sessions;        /* Session* — giải phóng khi thoát app */
+    GList *sessions; /* Session* — giải phóng khi thoát app */
 };
 
 /* render.c */
@@ -99,8 +99,8 @@ void input_attach(Session *st);
 
 /* session.c */
 /* Mở một phiên mới trong cửa sổ riêng. serial: NULL = thiết bị adb mặc định.
- * tcp_addr != NULL → transport TCP (LAN trực tiếp) tới "ip[:port]"; kèm serial thì core
- * tự deploy server qua adb trước khi connect. */
+ * tcp_addr != NULL → thử LAN trực tiếp tới "ip[:port]"; kèm serial thì core tự deploy server
+ * qua adb trước khi connect, và tự fallback adb tunnel nếu cổng LAN không tới được. */
 void session_new(App *app, const char *serial, const char *tcp_addr);
 /* GDestroyNotify cho App.sessions. */
 void session_free(gpointer data);
