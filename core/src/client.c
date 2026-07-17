@@ -249,12 +249,8 @@ rc_status rc_client_start(rc_client *c) {
         return r;
     }
 
-    r = rc_demux_read_meta(c->video_fd, &c->meta);
-    if (r != RC_OK) {
-        rc_emit_status(c, r, "đọc device_meta thất bại");
-        rc_server_teardown(c);
-        return r;
-    }
+    /* device_meta đã được deploy đọc sẵn (kèm timeout + fallback adb tunnel khi đường LAN
+     * chết giữa chừng — xem server_deploy.c); ở đây chỉ còn validate nội dung. */
     if (c->meta.version != RC_PROTO_VERSION) {
         rc_emit_status(c, RC_ERR_PROTOCOL, "phiên bản protocol của server không khớp");
         rc_server_teardown(c);

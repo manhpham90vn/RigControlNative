@@ -20,6 +20,10 @@
 
 #define ACCEPT_TIMEOUT_MS 15000
 #define WAIT_SLICE_MS 100 /* lát chờ để kiểm tra abort / server chết giữa chừng */
+/* Chờ device_meta tối đa 12s: qua rc-agent, agent thử mở đường vào thiết bị tới 10s rồi mới
+ * đóng kết nối (frontends/agent/net.c) — để dài hơn 10s thì EOF từ agent luôn tới trước,
+ * timeout chỉ còn bắt trường hợp treo im lặng. */
+#define META_TIMEOUT_MS 12000
 
 /* Đường dẫn jar server phía desktop: ưu tiên env RC_SERVER_PATH, mặc định "server/rc-server". */
 static const char *server_local_path(void) {
@@ -53,6 +57,20 @@ static int accept_timeout(rc_client *c, int listen_fd, int timeout_ms) {
         if (r < 0 || wait_cancelled(c)) return -1;
     }
     return -1; /* timeout */
+}
+
+/* Đọc device_meta từ video_fd vào c->meta, chờ tối đa timeout_ms theo lát WAIT_SLICE_MS để
+ * hủy sớm được. Kết nối mở được chưa chắc đã chạm tới server (qua rc-agent, agent accept hộ
+ * ngay cả khi đường adb forward vào thiết bị đã chết) — chỉ khi nhận được meta mới coi là
+ * thông, nên phải đọc ngay trong deploy để nhánh TCP còn đường fallback adb tunnel. */
+static rc_status read_meta_timeout(rc_client *c, int timeout_ms) {
+    for (int waited = 0; waited < timeout_ms; waited += WAIT_SLICE_MS) {
+        struct pollfd pfd = {.fd = c->video_fd, .events = POLLIN};
+        int r = poll(&pfd, 1, WAIT_SLICE_MS);
+        if (r > 0) return rc_demux_read_meta(c->video_fd, &c->meta);
+        if (r < 0 || wait_cancelled(c)) return RC_ERR_CONNECT;
+    }
+    return RC_ERR_CONNECT; /* timeout */
 }
 
 /* Sinh token hex 32 ký tự cho LAN trực tiếp (đọc /dev/urandom; fallback PRNG seed pid+time). */
@@ -148,6 +166,12 @@ static rc_status deploy_usb(rc_client *c) {
 
     close(c->listen_fd);
     c->listen_fd = -1;
+
+    r = read_meta_timeout(c, META_TIMEOUT_MS);
+    if (r != RC_OK) {
+        rc_emit_status(c, r, "không nhận được device_meta từ server (timeout/hủy)");
+        return r;
+    }
     atomic_store(&c->transport_desc,
                  serial && strchr(serial, ':')
                      ? "LAN qua adb"
@@ -231,25 +255,29 @@ static rc_status deploy_tcp(rc_client *c) {
         if (ok && c->cfg.control && (c->control_fd = connect_retry(c, host, port, 1000)) < 0)
             ok = 0;
     }
+    /* Connect mở được chưa đủ: phải nhận được device_meta mới chắc đã chạm tới server
+     * (xem read_meta_timeout). Đọc hỏng → coi như đường LAN chết, rơi xuống fallback. */
+    if (ok && read_meta_timeout(c, META_TIMEOUT_MS) != RC_OK) ok = 0;
     if (ok) {
         atomic_store(&c->transport_desc, "LAN trực tiếp");
         return RC_OK;
     }
 
     /* Không với tới cổng LAN dù adb vẫn dùng được → thiết bị sau NAT/firewall (vd emulator,
-     * adb forward qua VPN: IP trong serial là của máy host, không phải của Android). Cùng
-     * đường mạng với adb nhưng cổng stream không được forward → fallback adb tunnel thay vì
-     * fail để người dùng vẫn có hình. */
+     * adb forward qua VPN: IP trong serial là của máy host, không phải của Android), hoặc
+     * relay của rc-agent không mở được đường vào thiết bị (kết nối nhận về nhưng không có
+     * dữ liệu). Cùng đường mạng với adb nhưng cổng stream không thông → fallback adb tunnel
+     * thay vì fail để người dùng vẫn có hình. */
     if (deployed && !atomic_load(&c->abort_requested)) {
         rc_emit_status(c, RC_OK,
-                       "LAN trực tiếp không kết nối được (thiết bị sau NAT/firewall?) — chuyển "
+                       "LAN trực tiếp không thông (NAT/firewall/relay chết?) — chuyển "
                        "qua adb tunnel");
         rc_server_teardown(c); /* đóng fd dở dang + dừng server tcp vừa chạy */
         c->lan_token[0] = '\0';
         c->cfg.transport = RC_TRANSPORT_USB; /* teardown cuối phiên sẽ dọn adb reverse */
         return deploy_usb(c);
     }
-    rc_emit_status(c, RC_ERR_CONNECT, "connect video TCP thất bại");
+    rc_emit_status(c, RC_ERR_CONNECT, "kết nối TCP thất bại (connect/đọc device_meta)");
     return RC_ERR_CONNECT;
 }
 
