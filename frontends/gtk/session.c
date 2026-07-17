@@ -4,6 +4,29 @@
  */
 #include "rcgtk.h"
 
+#include <string.h>
+
+/* Cổng stream LAN đầu tiên thử cấp; trùng Protocol.DEFAULT_TCP_PORT phía server. */
+#define RC_LAN_BASE_PORT 27183
+
+/* Cổng stream LAN trống thấp nhất chưa bị phiên đang chạy nào chiếm. Mỗi phiên LAN khiến server
+ * bind một cổng riêng trên thiết bị; cấp cổng khác nhau để mở nhiều phiên cùng máy không dính
+ * BindException. Bỏ qua phiên đã torn (server đã bị SIGTERM → cổng trên thiết bị đã giải phóng).
+ * Chỉ gọi trên UI thread nên không cần khóa app->sessions. */
+static int alloc_lan_port(App *app) {
+    for (int port = RC_LAN_BASE_PORT;; port++) {
+        int used = 0;
+        for (GList *l = app->sessions; l; l = l->next) {
+            const Session *s = l->data;
+            if (!s->torn && s->lan_port == port) {
+                used = 1;
+                break;
+            }
+        }
+        if (!used) return port;
+    }
+}
+
 static gpointer start_thread(gpointer user) {
     Session *st = user;
     rc_status r = rc_client_start(st->client);
@@ -91,13 +114,21 @@ void session_new(App *app, const char *serial, const char *tcp_addr) {
     s->cfg.bit_rate = app->sel_bit_rate;
     s->cfg.audio = app->sel_audio;
     s->cfg.control = app->sel_control;
-    s->cfg.hw_decode = app->sel_hwdec;
     s->show_fps = app->sel_show_fps;
     s->serial_owned = serial ? g_strdup(serial) : NULL;
     s->cfg.serial = s->serial_owned;
     s->tcp_owned = tcp_addr ? g_strdup(tcp_addr) : NULL;
     if (s->tcp_owned) {
         s->cfg.transport = RC_TRANSPORT_TCP;
+        /* Địa chỉ không kèm port (từ bộ chọn Wi-Fi) → tự cấp cổng stream trống theo phiên để
+         * nhiều phiên LAN cùng thiết bị không trùng cổng. Có port sẵn (env RC_TCP_ADDR) → tôn
+         * trọng lựa chọn của người dùng. */
+        if (!strchr(s->tcp_owned, ':')) {
+            s->lan_port = alloc_lan_port(app);
+            char *withport = g_strdup_printf("%s:%d", s->tcp_owned, s->lan_port);
+            g_free(s->tcp_owned);
+            s->tcp_owned = withport;
+        }
         s->cfg.tcp_addr = s->tcp_owned;
     }
 

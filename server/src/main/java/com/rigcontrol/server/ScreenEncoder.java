@@ -203,6 +203,7 @@ public final class ScreenEncoder {
                 codec.releaseOutputBuffer(index, false);
             }
         }
+        return false; // thoát vì EOS, không phải do xoay màn hình
     }
 
     private MediaFormat createFormat() {

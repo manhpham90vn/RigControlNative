@@ -84,9 +84,8 @@ static void read_settings(App *app) {
     if (app->dd_bitrate)
         app->sel_bit_rate = BITRATE_VALUES[gtk_drop_down_get_selected(app->dd_bitrate)];
     if (app->cb_audio) app->sel_audio = gtk_check_button_get_active(app->cb_audio);
-    if (app->cb_viewonly) app->sel_control = !gtk_check_button_get_active(app->cb_viewonly);
+    if (app->cb_control) app->sel_control = gtk_check_button_get_active(app->cb_control);
     if (app->cb_fps) app->sel_show_fps = gtk_check_button_get_active(app->cb_fps);
-    if (app->cb_hwdec) app->sel_hwdec = gtk_check_button_get_active(app->cb_hwdec);
 }
 
 static void on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user) {
@@ -134,6 +133,16 @@ static void on_wifi_clicked(GtkButton *btn, gpointer user) {
 
 /* ---------- Dựng UI ---------- */
 
+/* Checkbox kèm mô tả (tooltip) rồi gắn vào parent; trả handle để lưu vào App. */
+static GtkCheckButton *add_option(GtkWidget *parent, const char *label, const char *tip,
+                                  gboolean active) {
+    GtkWidget *cb = gtk_check_button_new_with_label(label);
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(cb), active);
+    if (tip) gtk_widget_set_tooltip_text(cb, tip);
+    gtk_box_append(GTK_BOX(parent), cb);
+    return GTK_CHECK_BUTTON(cb);
+}
+
 static GtkWidget *labeled_dropdown(const char *label, const char *const *items, guint def,
                                    GtkDropDown **out) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
@@ -163,28 +172,26 @@ void chooser_show(App *app) {
     gtk_box_append(GTK_BOX(box), labeled_dropdown("Kích thước:", size_items, 0, &app->dd_size));
     gtk_box_append(GTK_BOX(box), labeled_dropdown("Bitrate:", bitrate_items, 2, &app->dd_bitrate));
 
+    /* Nhóm tùy chọn phiên: tiêu đề + các checkbox thụt vào, mỗi ô có tooltip mô tả. */
+    GtkWidget *opt_title = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(opt_title), "<b>Tùy chọn</b>");
+    gtk_label_set_xalign(GTK_LABEL(opt_title), 0);
+    gtk_box_append(GTK_BOX(box), opt_title);
+
+    GtkWidget *opts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_widget_set_margin_start(opts, 6);
+
+    /* Khẳng định (tick sẵn) dễ hiểu hơn ô "chỉ xem" phủ định; bỏ tick = view-only. */
+    app->cb_control = add_option(opts, "Điều khiển chuột & bàn phím",
+                                 "Bỏ tick để chỉ xem — không gửi chuột/bàn phím tới thiết bị",
+                                 app->base.control != 0);
     /* Tắt = không capture/encode/stream audio trên cả server lẫn client (nhẹ hơn). */
-    GtkWidget *cb_audio = gtk_check_button_new_with_label("Stream audio thiết bị");
-    gtk_check_button_set_active(GTK_CHECK_BUTTON(cb_audio), app->base.audio != 0);
-    app->cb_audio = GTK_CHECK_BUTTON(cb_audio);
-    gtk_box_append(GTK_BOX(box), cb_audio);
-
-    /* View-only: không mở kênh điều khiển, ẩn thanh nút + bỏ qua chuột/bàn phím. */
-    GtkWidget *cb_viewonly = gtk_check_button_new_with_label("Chỉ xem (không điều khiển)");
-    gtk_check_button_set_active(GTK_CHECK_BUTTON(cb_viewonly), app->base.control == 0);
-    app->cb_viewonly = GTK_CHECK_BUTTON(cb_viewonly);
-    gtk_box_append(GTK_BOX(box), cb_viewonly);
-
-    GtkWidget *cb_fps = gtk_check_button_new_with_label("Hiện FPS");
-    gtk_check_button_set_active(GTK_CHECK_BUTTON(cb_fps), app->sel_show_fps != 0);
-    app->cb_fps = GTK_CHECK_BUTTON(cb_fps);
-    gtk_box_append(GTK_BOX(box), cb_fps);
-
-    /* Decode bằng GPU (VAAPI rồi CUDA/NVDEC) nếu máy hỗ trợ; không có → core tự dùng sw. */
-    GtkWidget *cb_hwdec = gtk_check_button_new_with_label("HW decode (VAAPI/NVDEC)");
-    gtk_check_button_set_active(GTK_CHECK_BUTTON(cb_hwdec), app->sel_hwdec != 0);
-    app->cb_hwdec = GTK_CHECK_BUTTON(cb_hwdec);
-    gtk_box_append(GTK_BOX(box), cb_hwdec);
+    app->cb_audio = add_option(opts, "Phát âm thanh thiết bị",
+                               "Stream và phát audio của thiết bị (tốn thêm băng thông)",
+                               app->base.audio != 0);
+    app->cb_fps = add_option(opts, "Hiện FPS trên video",
+                             "Overlay số khung hình/giây ở góc màn hình", app->sel_show_fps != 0);
+    gtk_box_append(GTK_BOX(box), opts);
 
     GtkWidget *hint = gtk_label_new("Bấm một thiết bị để mở (mở được nhiều máy cùng lúc).");
     gtk_label_set_xalign(GTK_LABEL(hint), 0);
@@ -215,13 +222,13 @@ void chooser_show(App *app) {
     g_object_set_data(G_OBJECT(wifi_btn), "entry", entry);
     g_signal_connect(wifi_btn, "clicked", G_CALLBACK(on_wifi_clicked), app);
     gtk_box_append(GTK_BOX(wifi_row), wifi_btn);
-    GtkWidget *cb_lan = gtk_check_button_new_with_label("LAN trực tiếp");
-    gtk_widget_set_tooltip_text(cb_lan,
-                                "Stream TCP thẳng tới thiết bị (cổng 27183), adb chỉ để deploy "
-                                "server — nhẹ hơn adb tunnel");
-    app->cb_lan = GTK_CHECK_BUTTON(cb_lan);
-    gtk_box_append(GTK_BOX(wifi_row), cb_lan);
     gtk_box_append(GTK_BOX(box), wifi_row);
+
+    /* Chỉ áp dụng cho kết nối Wi-Fi phía trên → để riêng một dòng ngay dưới cho rõ ràng. */
+    app->cb_lan = add_option(box, "Kết nối LAN trực tiếp (độ trễ thấp hơn)",
+                             "Stream TCP thẳng tới thiết bị (cổng 27183), adb chỉ để deploy "
+                             "server — nhẹ hơn adb tunnel",
+                             FALSE);
 
     populate_devices(app, GTK_LIST_BOX(list));
     gtk_window_set_child(GTK_WINDOW(win), box);

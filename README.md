@@ -226,9 +226,10 @@ adb devices               # xác nhận thiết bị
 
 - **Phase 6** — LAN transport trực tiếp: transport TCP tự deploy server (`tcp=true`) qua adb rồi
   stream thẳng `ip:27183` không đi vòng adb tunnel (UI: tick *LAN trực tiếp* ở ô Wi-Fi; env:
-  `RC_SERIAL` + `RC_TCP_ADDR`). Hardware decode **VAAPI** (`RC_HWDEC=1` / checkbox): decode trên
-  GPU → hwdownload NV12 (render đã hỗ trợ NV12 qua texture RG8); máy không có VAAPI tự fallback
-  software. Zero-copy dmabuf → GL để phase sau.
+  `RC_SERIAL` + `RC_TCP_ADDR`). Hardware decode luôn bật, thử lần lượt **CUDA/NVDEC** (NVIDIA)
+  → **VAAPI** (Intel/AMD) → software: decode trên GPU → hwdownload NV12 (render đã hỗ trợ NV12
+  qua texture RG8); không GPU nào khả dụng thì tự fallback software. Zero-copy dmabuf → GL để
+  phase sau.
 
 Còn lại: zero-copy dmabuf (VAAPI → EGLImage), port Windows/macOS (Phase 7).
 

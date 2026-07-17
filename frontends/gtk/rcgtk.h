@@ -24,6 +24,7 @@ typedef struct {
     rc_config cfg;      /* cấu hình phiên */
     char *serial_owned; /* serial của phiên (sở hữu) */
     char *tcp_owned;    /* "ip[:port]" LAN trực tiếp (sở hữu); NULL = qua adb */
+    int lan_port;       /* cổng stream LAN tự cấp cho phiên; 0 = không phải LAN/không tự cấp */
     int torn;           /* đã dừng client chưa (tránh double-free) */
     GtkWidget *win;
     GtkWidget *bar; /* thanh nút điều khiển (đo chiều cao khi resize cửa sổ) */
@@ -69,13 +70,11 @@ struct App {
     int sel_audio;
     int sel_control;
     int sel_show_fps;
-    int sel_hwdec;
     GtkDropDown *dd_size; /* NULL nếu kết nối thẳng qua env */
     GtkDropDown *dd_bitrate;
     GtkCheckButton *cb_audio;
-    GtkCheckButton *cb_viewonly;
+    GtkCheckButton *cb_control; /* tick = bật điều khiển; bỏ tick = chỉ xem */
     GtkCheckButton *cb_fps;
-    GtkCheckButton *cb_hwdec;
     GtkCheckButton *cb_lan; /* ô Wi-Fi: stream LAN trực tiếp thay vì adb tunnel */
     GList *sessions; /* Session* — giải phóng khi thoát app */
 };

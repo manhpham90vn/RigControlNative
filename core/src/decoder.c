@@ -24,13 +24,14 @@ struct rc_decoder {
     int emitted_unsupported;       /* để không spam log format lạ */
 };
 
-/* Các backend hw decode thử theo thứ tự: VAAPI (Intel/AMD) rồi CUDA/NVDEC (NVIDIA). */
+/* Các backend hw decode thử theo thứ tự: CUDA/NVDEC (NVIDIA) rồi VAAPI (Intel/AMD),
+ * cuối cùng fallback software nếu không backend nào mở được. */
 static const struct {
     enum AVHWDeviceType type;
     enum AVPixelFormat pix_fmt;
 } HW_KINDS[] = {
-    {AV_HWDEVICE_TYPE_VAAPI, AV_PIX_FMT_VAAPI},
     {AV_HWDEVICE_TYPE_CUDA, AV_PIX_FMT_CUDA},
+    {AV_HWDEVICE_TYPE_VAAPI, AV_PIX_FMT_VAAPI},
 };
 
 static AVBufferRef *try_hw_device(enum AVHWDeviceType type) {
@@ -68,7 +69,7 @@ static enum AVCodecID av_codec_id(rc_codec codec) {
     }
 }
 
-rc_decoder *rc_decoder_create(rc_codec codec, int hw) {
+rc_decoder *rc_decoder_create(rc_codec codec) {
     rc_decoder *d = calloc(1, sizeof(*d));
     if (!d) return NULL;
 
@@ -83,18 +84,17 @@ rc_decoder *rc_decoder_create(rc_codec codec, int hw) {
     d->ctx->flags2 |= AV_CODEC_FLAG2_FAST;
     d->ctx->thread_count = 1;
 
-    /* Thử từng backend hw nếu được yêu cầu; không có → im lặng dùng software. */
+    /* Luôn thử hw decode, lần lượt từng backend; không backend nào mở được → im lặng dùng
+     * software. */
     d->hw_pix_fmt = AV_PIX_FMT_NONE;
-    if (hw) {
-        for (size_t k = 0; k < sizeof HW_KINDS / sizeof HW_KINDS[0]; k++) {
-            d->hw_ctx = try_hw_device(HW_KINDS[k].type);
-            if (d->hw_ctx) {
-                d->hw_pix_fmt = HW_KINDS[k].pix_fmt;
-                d->ctx->hw_device_ctx = av_buffer_ref(d->hw_ctx);
-                d->ctx->opaque = d;
-                d->ctx->get_format = pick_hw_format;
-                break;
-            }
+    for (size_t k = 0; k < sizeof HW_KINDS / sizeof HW_KINDS[0]; k++) {
+        d->hw_ctx = try_hw_device(HW_KINDS[k].type);
+        if (d->hw_ctx) {
+            d->hw_pix_fmt = HW_KINDS[k].pix_fmt;
+            d->ctx->hw_device_ctx = av_buffer_ref(d->hw_ctx);
+            d->ctx->opaque = d;
+            d->ctx->get_format = pick_hw_format;
+            break;
         }
     }
 
