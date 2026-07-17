@@ -218,8 +218,10 @@ void rescan_once(void) {
         }
         Slot *slot = &g_slots[g_nslots];
         memset(slot, 0, sizeof *slot);
-        snprintf(slot->serial, sizeof slot->serial, "%s", devs[j].serial);
-        snprintf(slot->model, sizeof slot->model, "%s", devs[j].model);
+        snprintf(slot->serial, sizeof slot->serial, "%.*s", (int)sizeof slot->serial - 1,
+                 devs[j].serial);
+        snprintf(slot->model, sizeof slot->model, "%.*s", (int)sizeof slot->model - 1,
+                 devs[j].model);
         slot->kind = dev_kind(slot->serial);
         slot->idx = g_nslots;
         slot->adb_port = g_adb_base + slot->idx;
