@@ -111,6 +111,7 @@ public final class ScreenEncoder {
             } catch (IOException e) {
                 throw new IOException("không tạo được encoder " + options.codec, e);
             }
+            applyH264HighProfile(codec, format);
 
             Surface surface = null;
             IBinder display = null;
@@ -203,6 +204,30 @@ public final class ScreenEncoder {
             }
         }
         return false; // thoát vì EOS, không phải do xoay màn hình
+    }
+
+    /**
+     * Encoder Android (nhất là Qualcomm) mặc định H.264 Baseline — nén kém hơn và VAAPI phía
+     * desktop không có mapping cho Baseline thuần. Nâng lên High nếu encoder hỗ trợ (không set
+     * KEY_LEVEL để encoder tự chọn level theo kích thước/fps); encoder không hỗ trợ High thì
+     * giữ mặc định thay vì để configure() ném lỗi.
+     */
+    private void applyH264HighProfile(MediaCodec codec, MediaFormat format) {
+        if (!MediaFormat.MIMETYPE_VIDEO_AVC.equals(mime())) {
+            return;
+        }
+        try {
+            MediaCodecInfo.CodecCapabilities caps =
+                codec.getCodecInfo().getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC);
+            for (MediaCodecInfo.CodecProfileLevel pl : caps.profileLevels) {
+                if (pl.profile == MediaCodecInfo.CodecProfileLevel.AVCProfileHigh) {
+                    format.setInteger(
+                        MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh);
+                    return;
+                }
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     private MediaFormat createFormat() {

@@ -10,6 +10,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/frame.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
 
 #include <stdio.h>
@@ -23,6 +24,7 @@ struct rc_decoder {
     AVFrame *sw_frame;             /* đích hwdownload khi decode hw */
     AVBufferRef *hw_ctx;           /* device context hw; NULL = software */
     enum AVPixelFormat hw_pix_fmt; /* pix fmt hw tương ứng (VAAPI/CUDA); NONE nếu sw */
+    int hw_failed;                 /* hwaccel init lỗi → đã rơi hẳn về software */
     int emitted_unsupported;       /* để không spam log format lạ */
 };
 
@@ -51,11 +53,23 @@ static AVBufferRef *try_hw_device(enum AVHWDeviceType type) {
     return NULL;
 }
 
-/* get_format callback: chọn pix fmt hw của backend đã mở, ngược lại format sw đầu tiên. */
+/* get_format callback: chọn pix fmt hw của backend đã mở, ngược lại format sw đầu tiên.
+ * Khi hwaccel init lỗi FFmpeg loại fmt hw khỏi danh sách rồi gọi lại — lúc đó phải trả
+ * format software; trả fmts[0] (thường là fmt hw khác: vdpau/vulkan/cuda) chỉ sinh thêm
+ * một vòng lỗi "does not match the type of the provided device context" mỗi lần đổi
+ * kích thước. Ghi nhớ thất bại để các lần gọi sau đi thẳng vào software. */
 static enum AVPixelFormat pick_hw_format(AVCodecContext *ctx, const enum AVPixelFormat *fmts) {
-    const rc_decoder *d = ctx->opaque;
-    for (const enum AVPixelFormat *p = fmts; *p != AV_PIX_FMT_NONE; p++)
-        if (*p == d->hw_pix_fmt) return *p;
+    rc_decoder *d = ctx->opaque;
+    if (!d->hw_failed) {
+        for (const enum AVPixelFormat *p = fmts; *p != AV_PIX_FMT_NONE; p++)
+            if (*p == d->hw_pix_fmt) return *p;
+        d->hw_failed = 1;
+        fprintf(stderr, "[core] hw decode không dùng được với stream này → software\n");
+    }
+    for (const enum AVPixelFormat *p = fmts; *p != AV_PIX_FMT_NONE; p++) {
+        const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(*p);
+        if (desc && !(desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) return *p;
+    }
     return fmts[0];
 }
 
@@ -105,6 +119,11 @@ rc_decoder *rc_decoder_create(rc_codec codec, int allow_hw) {
             d->ctx->hw_device_ctx = av_buffer_ref(d->hw_ctx);
             d->ctx->opaque = d;
             d->ctx->get_format = pick_hw_format;
+            /* Encoder Android (nhất là Qualcomm) mặc định H.264 Baseline (66) — VAAPI không
+             * có mapping cho Baseline thuần, chỉ Constrained Baseline. Hai profile chỉ khác
+             * FMO/ASO mà không encoder thực tế nào dùng → cho phép mismatch để decode bằng
+             * profile gần nhất thay vì rơi về software. */
+            d->ctx->hwaccel_flags |= AV_HWACCEL_FLAG_ALLOW_PROFILE_MISMATCH;
             break;
         }
     }
@@ -124,11 +143,11 @@ fail:
 }
 
 int rc_decoder_is_hw(const rc_decoder *d) {
-    return d && d->hw_ctx != NULL;
+    return d && d->hw_ctx != NULL && !d->hw_failed;
 }
 
 const char *rc_decoder_hw_name(const rc_decoder *d) {
-    if (!d || !d->hw_ctx) return NULL;
+    if (!d || !d->hw_ctx || d->hw_failed) return NULL;
     return av_hwdevice_get_type_name(((AVHWDeviceContext *)d->hw_ctx->data)->type);
 }
 
