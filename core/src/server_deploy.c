@@ -148,6 +148,10 @@ static rc_status deploy_usb(rc_client *c) {
 
     close(c->listen_fd);
     c->listen_fd = -1;
+    atomic_store(&c->transport_desc,
+                 serial && strchr(serial, ':')
+                     ? "LAN qua adb"
+                     : (serial && strncmp(serial, "emulator-", 9) == 0 ? "adb (máy ảo)" : "USB"));
     return RC_OK;
 }
 
@@ -212,7 +216,10 @@ static rc_status deploy_tcp(rc_client *c) {
         if (ok && c->cfg.control && (c->control_fd = connect_retry(c, host, port, 4, 250)) < 0)
             ok = 0;
     }
-    if (ok) return RC_OK;
+    if (ok) {
+        atomic_store(&c->transport_desc, "LAN trực tiếp");
+        return RC_OK;
+    }
 
     /* Không với tới cổng LAN dù adb vẫn dùng được → thiết bị sau NAT/firewall (vd emulator,
      * adb forward qua VPN: IP trong serial là của máy host, không phải của Android). Cùng

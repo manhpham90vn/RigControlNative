@@ -159,6 +159,10 @@ const char *rc_status_str(rc_status code);
  * "GPU Intel/AMD (VAAPI)" hoặc "CPU (software)". Tự cập nhật nếu core fallback hw→sw giữa
  * chừng. NULL nếu phiên chưa start/chưa có decoder. An toàn gọi từ thread bất kỳ. */
 const char *rc_client_get_decoder_desc(const rc_client *c);
+/* Đường stream thực tế của phiên: "LAN trực tiếp", "LAN qua adb" (wireless adb — gồm cả khi
+ * LAN trực tiếp không tới được và core đã fallback), "adb (máy ảo)" hoặc "USB". NULL tới khi
+ * deploy xong. Trỏ string literal tĩnh — an toàn gọi từ thread bất kỳ. */
+const char *rc_client_get_transport_desc(const rc_client *c);
 /* Kích thước VIDEO (từ device_meta — bằng màn hình thiết bị khi max_size=0, đã làm tròn
  * xuống bội số 8); trả RC_ERR_* nếu chưa handshake. */
 rc_status rc_client_get_device_size(const rc_client *c, int *width, int *height);

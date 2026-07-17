@@ -44,19 +44,38 @@ static void on_status(rc_status code, const char *msg, void *user) {
         g_warning("[core] %s: %s", rc_status_str(code), msg ? msg : "");
 }
 
-/* Timer 1s trên UI thread: hiện FPS + backend decode ("CPU (software)" / "GPU ... (VAAPI)").
- * Đọc lại mỗi tick vì core có thể fallback hw→sw giữa chừng. */
+/* Timer 1s trên UI thread: ghép FPS + backend decode ("CPU (software)" / "GPU ... (VAAPI)")
+ * vào sau tiêu đề cửa sổ. Đọc lại mỗi tick vì core có thể fallback hw→sw giữa chừng. */
 static gboolean fps_tick(gpointer user) {
     Session *st = user;
-    if (!atomic_load(&st->alive) || !st->fps_label) return G_SOURCE_REMOVE;
+    if (!atomic_load(&st->alive)) return G_SOURCE_REMOVE;
     const char *dec = st->client ? rc_client_get_decoder_desc(st->client) : NULL;
-    char buf[96];
+    int fps = atomic_exchange(&st->frame_count, 0);
+    char buf[256];
     if (dec)
-        g_snprintf(buf, sizeof buf, " %d FPS · %s ", atomic_exchange(&st->frame_count, 0), dec);
+        g_snprintf(buf, sizeof buf, "%s · %d FPS · %s", st->title_base, fps, dec);
     else
-        g_snprintf(buf, sizeof buf, " %d FPS ", atomic_exchange(&st->frame_count, 0));
-    gtk_label_set_text(GTK_LABEL(st->fps_label), buf);
+        g_snprintf(buf, sizeof buf, "%s · %d FPS", st->title_base, fps);
+    gtk_window_set_title(GTK_WINDOW(st->win), buf);
     return G_SOURCE_CONTINUE;
+}
+
+/* Poll 500ms tới khi core biết đường stream thực tế (chỉ có sau deploy — LAN trực tiếp hay
+ * đã fallback adb tunnel) → gắn vào tiêu đề cửa sổ rồi tự dừng. */
+static gboolean title_tick(gpointer user) {
+    Session *st = user;
+    if (!atomic_load(&st->alive)) {
+        st->title_timer = 0;
+        return G_SOURCE_REMOVE;
+    }
+    const char *t = st->client ? rc_client_get_transport_desc(st->client) : NULL;
+    if (!t) return G_SOURCE_CONTINUE;
+    const char *tag = st->serial_owned ? st->serial_owned
+                                       : (st->tcp_owned ? st->tcp_owned : "default");
+    g_snprintf(st->title_base, sizeof st->title_base, "RigControlNative — %s (%s)", tag, t);
+    gtk_window_set_title(GTK_WINDOW(st->win), st->title_base); /* fps_tick sẽ ghép thêm FPS */
+    st->title_timer = 0;
+    return G_SOURCE_REMOVE;
 }
 
 static void build_view(Session *st) {
@@ -66,21 +85,7 @@ static void build_view(Session *st) {
     if (st->cfg.control) gtk_box_append(GTK_BOX(root), input_create_navbar(st));
 
     GtkWidget *video = render_create_gl_area(st);
-    if (st->show_fps) {
-        GtkWidget *overlay = gtk_overlay_new();
-        gtk_widget_set_hexpand(overlay, TRUE);
-        gtk_widget_set_vexpand(overlay, TRUE);
-        gtk_overlay_set_child(GTK_OVERLAY(overlay), video);
-        st->fps_label = gtk_label_new(" — FPS ");
-        gtk_widget_add_css_class(st->fps_label, "osd"); /* nền tối mờ kiểu OSD */
-        gtk_widget_set_halign(st->fps_label, GTK_ALIGN_START);
-        gtk_widget_set_valign(st->fps_label, GTK_ALIGN_START);
-        gtk_widget_set_margin_top(st->fps_label, 8);
-        gtk_widget_set_margin_start(st->fps_label, 8);
-        gtk_overlay_add_overlay(GTK_OVERLAY(overlay), st->fps_label);
-        video = overlay;
-        st->fps_timer = g_timeout_add_seconds(1, fps_tick, st);
-    }
+    if (st->show_fps) st->fps_timer = g_timeout_add_seconds(1, fps_tick, st);
     gtk_box_append(GTK_BOX(root), video);
 
     if (st->cfg.control) input_attach(st);
@@ -96,7 +101,10 @@ static void session_teardown(Session *s) {
         g_source_remove(s->fps_timer);
         s->fps_timer = 0;
     }
-    s->fps_label = NULL;
+    if (s->title_timer) {
+        g_source_remove(s->title_timer);
+        s->title_timer = 0;
+    }
     /* Thread start có thể còn đang deploy/chờ kết nối → yêu cầu hủy rồi join TRƯỚC khi
      * destroy client, tránh use-after-free (thread dùng rc_client sau khi free). */
     if (s->client) rc_client_abort(s->client);
@@ -159,14 +167,11 @@ void session_new(App *app, const char *serial, const char *tcp_addr) {
     rc_client_set_status_callback(s->client, on_status, s);
 
     s->win = gtk_application_window_new(app->gtk);
-    char title[192];
-    const char *tag = s->tcp_owned ? s->tcp_owned
-                      : serial
-                          ? serial
-                          : (s->cfg.transport == RC_TRANSPORT_TCP ? s->cfg.tcp_addr : "default");
-    g_snprintf(title, sizeof title, "RigControlNative — %s%s", tag ? tag : "default",
-               s->tcp_owned ? " (LAN)" : "");
-    gtk_window_set_title(GTK_WINDOW(s->win), title);
+    const char *tag = serial ? serial : (s->tcp_owned ? s->tcp_owned : "default");
+    g_snprintf(s->title_base, sizeof s->title_base, "RigControlNative — %s (đang kết nối…)",
+               tag);
+    gtk_window_set_title(GTK_WINDOW(s->win), s->title_base);
+    s->title_timer = g_timeout_add(500, title_tick, s);
     gtk_window_set_default_size(GTK_WINDOW(s->win), 540, 960);
     g_signal_connect(s->win, "destroy", G_CALLBACK(on_session_destroy), s);
     build_view(s);

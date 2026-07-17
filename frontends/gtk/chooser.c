@@ -21,14 +21,10 @@ typedef struct {
 /* Serial dạng "ip:port" = thiết bị wireless (adb connect qua mạng). */
 static gboolean dev_is_wireless(const char *serial) { return strchr(serial, ':') != NULL; }
 
-/*
- * Nhãn loại kết nối trên dòng thiết bị. Với máy wireless, nhãn phụ thuộc checkbox
- * "LAN trực tiếp" — bấm dòng sẽ mở đúng chế độ đang hiển thị.
- */
-static const char *conn_label(App *app, const char *serial) {
-    if (dev_is_wireless(serial))
-        return (app->cb_lan && gtk_check_button_get_active(app->cb_lan)) ? "LAN trực tiếp"
-                                                                         : "LAN qua adb";
+/* Nhãn cách thiết bị đấu nối với adb. Đường stream thực tế (LAN trực tiếp hay fallback adb
+ * tunnel) chỉ biết sau khi kết nối — hiện trên tiêu đề cửa sổ phiên. */
+static const char *conn_label(const char *serial) {
+    if (dev_is_wireless(serial)) return "LAN";
     if (g_str_has_prefix(serial, "emulator-")) return "Máy ảo";
     return "USB";
 }
@@ -59,6 +55,7 @@ static GPtrArray *list_adb_devices(void) {
 }
 
 static void populate_devices(App *app, GtkListBox *list) {
+    (void)app;
     GtkWidget *child;
     while ((child = gtk_widget_get_first_child(GTK_WIDGET(list))))
         gtk_list_box_remove(list, child);
@@ -75,8 +72,7 @@ static void populate_devices(App *app, GtkListBox *list) {
         DevInfo *d = devs->pdata[i];
         char text[256];
         g_snprintf(text, sizeof text, "<b>%s</b>  <small>· %s</small>\n<small>%s</small>",
-                   d->model[0] ? d->model : "(không rõ model)", conn_label(app, d->serial),
-                   d->serial);
+                   d->model[0] ? d->model : "(không rõ model)", conn_label(d->serial), d->serial);
         GtkWidget *lbl = gtk_label_new(NULL);
         gtk_label_set_markup(GTK_LABEL(lbl), text);
         gtk_label_set_xalign(GTK_LABEL(lbl), 0);
@@ -108,8 +104,9 @@ static void on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user)
     App *app = user;
     const char *serial = g_object_get_data(G_OBJECT(row), "serial");
     read_settings(app);
-    /* Máy wireless + tick "LAN trực tiếp" → stream TCP thẳng (như ô Wi-Fi), khớp nhãn trên dòng. */
-    if (dev_is_wireless(serial) && app->cb_lan && gtk_check_button_get_active(app->cb_lan)) {
+    /* Máy wireless → luôn thử LAN trực tiếp (độ trễ thấp hơn); core tự fallback adb tunnel
+     * nếu cổng LAN không tới được (thiết bị sau NAT/firewall). */
+    if (dev_is_wireless(serial)) {
         char host[128];
         const char *colon = strrchr(serial, ':');
         size_t n = (size_t)(colon - serial);
@@ -128,32 +125,22 @@ static void on_refresh(GtkButton *btn, gpointer user) {
     populate_devices((App *)user, list);
 }
 
-/* Tick/bỏ tick "LAN trực tiếp" → làm mới danh sách để nhãn trên máy wireless đổi theo. */
-static void on_lan_toggled(GtkCheckButton *cb, gpointer user) {
-    GtkListBox *list = g_object_get_data(G_OBJECT(cb), "list");
-    populate_devices((App *)user, list);
-}
-
 /*
  * Mở phiên tới thiết bị wireless adb (core tự `adb connect` vì serial chứa ':').
- * Tick "LAN trực tiếp" → stream TCP thẳng tới host:27183 (adb chỉ dùng để deploy server),
- * không đi vòng qua adb tunnel — độ trễ/overhead thấp hơn.
+ * Luôn thử LAN trực tiếp (adb chỉ dùng để deploy server) — độ trễ/overhead thấp hơn adb
+ * tunnel; core tự fallback adb tunnel nếu cổng LAN không tới được.
  */
 static void wifi_session_open(App *app, GtkEntry *entry) {
     const char *addr = gtk_editable_get_text(GTK_EDITABLE(entry));
     if (!addr || !*addr) return;
     read_settings(app);
-    if (app->cb_lan && gtk_check_button_get_active(app->cb_lan)) {
-        char host[128];
-        const char *colon = strrchr(addr, ':');
-        size_t n = colon ? (size_t)(colon - addr) : strlen(addr);
-        if (n == 0 || n >= sizeof host) return;
-        memcpy(host, addr, n);
-        host[n] = '\0'; /* không kèm port → core dùng cổng stream mặc định 27183 */
-        session_new(app, addr, host);
-    } else {
-        session_new(app, addr, NULL);
-    }
+    char host[128];
+    const char *colon = strrchr(addr, ':');
+    size_t n = colon ? (size_t)(colon - addr) : strlen(addr);
+    if (n == 0 || n >= sizeof host) return;
+    memcpy(host, addr, n);
+    host[n] = '\0'; /* không kèm port → session tự cấp cổng stream (mặc định 27183) */
+    session_new(app, addr, host);
 }
 
 static void on_wifi_activate(GtkEntry *entry, gpointer user) {
@@ -222,8 +209,9 @@ void chooser_show(App *app) {
     app->cb_audio =
         add_option(opts, "Phát âm thanh thiết bị",
                    "Stream và phát audio của thiết bị (tốn thêm băng thông)", app->base.audio != 0);
-    app->cb_fps = add_option(opts, "Hiện FPS trên video",
-                             "Overlay số khung hình/giây ở góc màn hình", app->sel_show_fps != 0);
+    app->cb_fps = add_option(opts, "Hiện FPS trên tiêu đề cửa sổ",
+                             "Ghép số khung hình/giây và backend decode vào tiêu đề cửa sổ phiên",
+                             app->sel_show_fps != 0);
     gtk_box_append(GTK_BOX(box), opts);
 
     GtkWidget *hint = gtk_label_new("Bấm một thiết bị để mở (mở được nhiều máy cùng lúc).");
@@ -248,6 +236,9 @@ void chooser_show(App *app) {
     GtkWidget *wifi_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget *entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "192.168.1.x:5555");
+    gtk_widget_set_tooltip_text(entry, "Máy đã bật `adb tcpip 5555`. Luôn thử LAN trực tiếp "
+                                       "(độ trễ thấp hơn), tự chuyển qua adb tunnel nếu cổng "
+                                       "LAN không tới được.");
     gtk_widget_set_hexpand(entry, TRUE);
     g_signal_connect(entry, "activate", G_CALLBACK(on_wifi_activate), app);
     gtk_box_append(GTK_BOX(wifi_row), entry);
@@ -256,16 +247,6 @@ void chooser_show(App *app) {
     g_signal_connect(wifi_btn, "clicked", G_CALLBACK(on_wifi_clicked), app);
     gtk_box_append(GTK_BOX(wifi_row), wifi_btn);
     gtk_box_append(GTK_BOX(box), wifi_row);
-
-    /* Mặc định tick: LAN trực tiếp nhanh hơn adb tunnel. Áp dụng cho ô Wi-Fi và máy wireless
-     * trong danh sách (serial ip:port); thiết bị USB không bị ảnh hưởng (stream qua cáp). */
-    app->cb_lan = add_option(box, "Kết nối LAN trực tiếp cho máy wireless (độ trễ thấp hơn)",
-                             "Stream TCP thẳng tới thiết bị (cổng 27183, có token bảo vệ), adb "
-                             "chỉ để deploy server — nhẹ hơn adb tunnel. Áp dụng cho ô Wi-Fi và "
-                             "máy wireless trong danh sách; thiết bị USB stream qua cáp như cũ.",
-                             TRUE);
-    g_object_set_data(G_OBJECT(app->cb_lan), "list", list);
-    g_signal_connect(app->cb_lan, "toggled", G_CALLBACK(on_lan_toggled), app);
 
     populate_devices(app, GTK_LIST_BOX(list));
     gtk_window_set_child(GTK_WINDOW(win), box);

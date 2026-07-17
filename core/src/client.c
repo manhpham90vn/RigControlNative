@@ -101,6 +101,11 @@ const char *rc_client_get_decoder_desc(const rc_client *c) {
     return atomic_load(&((rc_client *)c)->decoder_desc);
 }
 
+const char *rc_client_get_transport_desc(const rc_client *c) {
+    if (!c) return NULL;
+    return atomic_load(&((rc_client *)c)->transport_desc);
+}
+
 /* Buffer lớn dần tái sử dụng: đảm bảo *cap >= need. Trả 0 nếu hết bộ nhớ. */
 static int ensure_cap(uint8_t **buf, size_t *cap, size_t need) {
     if (*cap >= need) return 1;

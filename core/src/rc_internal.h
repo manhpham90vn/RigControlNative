@@ -87,6 +87,9 @@ struct rc_client {
     /* Mô tả backend decode cho UI (trỏ vào string literal tĩnh — đọc/ghi atomic, không free).
      * NULL = chưa có decoder. Net thread cập nhật khi fallback hw→sw. */
     const char *_Atomic decoder_desc;
+    /* Đường stream thực tế cho UI ("LAN trực tiếp"/"LAN qua adb"/"USB"...; string literal tĩnh).
+     * NULL tới khi deploy xong — chỉ lúc đó mới biết LAN trực tiếp hay đã fallback adb. */
+    const char *_Atomic transport_desc;
     /* Thread handles được khai báo trong client.c (pthread) để tránh include ở header này. */
     void *net_thread;   /* pthread_t*  — vòng video */
     void *audio_thread; /* pthread_t*  — vòng audio */
