@@ -67,6 +67,7 @@ RigControlNative/
       control_msg.c             # serialize mouse/keyboard → control protocol
   frontends/
     gtk/                        # MVP (GTK4 + GtkGLArea)
+    agent/                      # rc-agent: CLI chạy trên máy cắm thiết bị/emulator (mac/Linux)
     winui/                      # phase sau (C++/WinUI 3, SwapChainPanel + D3D11)
     swiftui/                    # phase sau (Swift/SwiftUI, MTKView + Metal)
 ```
@@ -180,6 +181,28 @@ cmake -B build && cmake --build build
 adb devices               # xác nhận thiết bị
 ./build/frontends/gtk/rigcontrol
 ```
+
+### rc-agent — điều khiển thiết bị cắm ở MÁY KHÁC trong LAN
+
+Khi điện thoại cắm cáp (hoặc emulator chạy) trên một máy khác — ví dụ một máy Mac — chạy
+`rc-agent` trên máy đó; nó tự cấu hình rồi in địa chỉ `ip:port` để dán vào ô
+"Thêm thiết bị Wi-Fi" của app:
+
+- **Điện thoại USB**: tự `adb tcpip 5555`, đọc IP Wi-Fi của điện thoại, verify cổng và in
+  `<ip-điện-thoại>:5555`. Desktop kết nối thẳng tới điện thoại — agent thoát được.
+- **Emulator** (adbd nằm sau NAT trong guest): tự `adb forward` + relay TCP ra `0.0.0.0`,
+  in `<ip-máy-đó>:15553`; agent chạy tiếp giữ relay (Ctrl-C dọn forward). Dải cổng stream
+  27183-27186 cũng được relay để phiên chạy "LAN trực tiếp"; nếu không thì core tự fallback
+  adb tunnel.
+
+Build trên macOS (chỉ cần Xcode Command Line Tools + adb, không cần GTK/FFmpeg):
+
+```bash
+cmake -B build -DRC_BUILD_GTK=OFF && cmake --build build --target rc-agent
+./build/frontends/agent/rc-agent          # xem cờ: --tcpip-port --adb-base --no-stream --expose
+```
+
+Trên Linux: `make agent`.
 
 ### Định dạng & lint
 

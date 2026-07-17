@@ -35,6 +35,10 @@ core: configure ## Chỉ build libcore
 gtk: configure ## Chỉ build front-end GTK (nếu có libgtk-4-dev)
 	cmake --build $(BUILD_DIR) --target rigcontrol
 
+.PHONY: agent
+agent: configure ## Build rc-agent (CLI chạy trên máy cắm thiết bị/emulator)
+	cmake --build $(BUILD_DIR) --target rc-agent
+
 .PHONY: server
 server: ## Build Android rc-server (javac + d8)
 	./server/build.sh
