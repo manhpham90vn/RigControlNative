@@ -12,6 +12,7 @@ public final class Options {
     public boolean tcp = false; // true = listen TCP (LAN); false = localabstract (USB)
     public int port = Protocol.DEFAULT_TCP_PORT;
     public String socketName = Protocol.LOCALABSTRACT_NAME; // tên localabstract (đa session)
+    public String token = null; // token hex 32 ký tự: bắt buộc mỗi kết nối TCP gửi trước
 
     public static Options parse(String[] args) {
         Options o = new Options();
@@ -51,6 +52,9 @@ public final class Options {
                     break;
                 case "socket_name":
                     o.socketName = v;
+                    break;
+                case "token":
+                    o.token = v;
                     break;
                 default: /* bỏ qua key lạ để tương thích tiến */
                     break;

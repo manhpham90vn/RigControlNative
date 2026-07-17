@@ -167,7 +167,7 @@ void chooser_show(App *app) {
     gtk_widget_set_margin_end(box, 18);
 
     static const char *const size_items[] = {"Full (gốc)", "1920", "1280", "1024", "800", NULL};
-    static const char *const bitrate_items[] = {"2 Mbps",  "4 Mbps",  "8 Mbps", "16 Mbps",
+    static const char *const bitrate_items[] = {"2 Mbps",  "4 Mbps",  "8 Mbps",  "16 Mbps",
                                                 "24 Mbps", "32 Mbps", "48 Mbps", NULL};
     gtk_box_append(GTK_BOX(box), labeled_dropdown("Kích thước:", size_items, 0, &app->dd_size));
     gtk_box_append(GTK_BOX(box), labeled_dropdown("Bitrate:", bitrate_items, 2, &app->dd_bitrate));
@@ -186,9 +186,9 @@ void chooser_show(App *app) {
                                  "Bỏ tick để chỉ xem — không gửi chuột/bàn phím tới thiết bị",
                                  app->base.control != 0);
     /* Tắt = không capture/encode/stream audio trên cả server lẫn client (nhẹ hơn). */
-    app->cb_audio = add_option(opts, "Phát âm thanh thiết bị",
-                               "Stream và phát audio của thiết bị (tốn thêm băng thông)",
-                               app->base.audio != 0);
+    app->cb_audio =
+        add_option(opts, "Phát âm thanh thiết bị",
+                   "Stream và phát audio của thiết bị (tốn thêm băng thông)", app->base.audio != 0);
     app->cb_fps = add_option(opts, "Hiện FPS trên video",
                              "Overlay số khung hình/giây ở góc màn hình", app->sel_show_fps != 0);
     gtk_box_append(GTK_BOX(box), opts);
@@ -225,10 +225,13 @@ void chooser_show(App *app) {
     gtk_box_append(GTK_BOX(box), wifi_row);
 
     /* Chỉ áp dụng cho kết nối Wi-Fi phía trên → để riêng một dòng ngay dưới cho rõ ràng. */
-    app->cb_lan = add_option(box, "Kết nối LAN trực tiếp (độ trễ thấp hơn)",
-                             "Stream TCP thẳng tới thiết bị (cổng 27183), adb chỉ để deploy "
-                             "server — nhẹ hơn adb tunnel",
-                             FALSE);
+    /* Mặc định tick: LAN trực tiếp nhanh hơn adb tunnel. KHÔNG áp dụng cho thiết bị USB ở
+     * danh sách trên (USB stream qua cáp, không có IP) — chỉ có tác dụng với ô Wi-Fi. */
+    app->cb_lan = add_option(box, "Kết nối LAN trực tiếp — chỉ cho ô Wi-Fi (độ trễ thấp hơn)",
+                             "Stream TCP thẳng tới thiết bị (cổng 27183, có token bảo vệ), adb "
+                             "chỉ để deploy server — nhẹ hơn adb tunnel. Thiết bị USB ở danh "
+                             "sách trên không dùng tùy chọn này (stream qua cáp).",
+                             TRUE);
 
     populate_devices(app, GTK_LIST_BOX(list));
     gtk_window_set_child(GTK_WINDOW(win), box);

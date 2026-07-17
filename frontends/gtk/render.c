@@ -9,34 +9,32 @@
 
 /* ---------- Shader ---------- */
 
-static const char *VERT_BODY =
-    "in vec2 pos;\n"
-    "in vec2 tex;\n"
-    "out vec2 v_uv;\n"
-    "void main() { v_uv = tex; gl_Position = vec4(pos, 0.0, 1.0); }\n";
+static const char *VERT_BODY = "in vec2 pos;\n"
+                               "in vec2 tex;\n"
+                               "out vec2 v_uv;\n"
+                               "void main() { v_uv = tex; gl_Position = vec4(pos, 0.0, 1.0); }\n";
 
 /* YUV→RGB với ma trận màu cấp qua uniform (BT.601/709, limited/full-range theo frame).
  * nv12=1: chroma đan xen trong u_tex (RG8, từ hwdec); nv12=0: I420 3 plane R8. */
-static const char *FRAG_BODY =
-    "uniform sampler2D y_tex;\n"
-    "uniform sampler2D u_tex;\n"
-    "uniform sampler2D v_tex;\n"
-    "uniform mat3 cmat;\n"
-    "uniform float y_off;\n"
-    "uniform int nv12;\n"
-    "in vec2 v_uv;\n"
-    "out vec4 frag;\n"
-    "void main() {\n"
-    "  vec3 yuv;\n"
-    "  yuv.x = texture(y_tex, v_uv).r - y_off;\n"
-    "  if (nv12 == 1) {\n"
-    "    yuv.yz = texture(u_tex, v_uv).rg - vec2(0.5);\n"
-    "  } else {\n"
-    "    yuv.y = texture(u_tex, v_uv).r - 0.5;\n"
-    "    yuv.z = texture(v_tex, v_uv).r - 0.5;\n"
-    "  }\n"
-    "  frag = vec4(cmat * yuv, 1.0);\n"
-    "}\n";
+static const char *FRAG_BODY = "uniform sampler2D y_tex;\n"
+                               "uniform sampler2D u_tex;\n"
+                               "uniform sampler2D v_tex;\n"
+                               "uniform mat3 cmat;\n"
+                               "uniform float y_off;\n"
+                               "uniform int nv12;\n"
+                               "in vec2 v_uv;\n"
+                               "out vec4 frag;\n"
+                               "void main() {\n"
+                               "  vec3 yuv;\n"
+                               "  yuv.x = texture(y_tex, v_uv).r - y_off;\n"
+                               "  if (nv12 == 1) {\n"
+                               "    yuv.yz = texture(u_tex, v_uv).rg - vec2(0.5);\n"
+                               "  } else {\n"
+                               "    yuv.y = texture(u_tex, v_uv).r - 0.5;\n"
+                               "    yuv.z = texture(v_tex, v_uv).r - 0.5;\n"
+                               "  }\n"
+                               "  frag = vec4(cmat * yuv, 1.0);\n"
+                               "}\n";
 
 /*
  * Dựng ma trận YUV→RGB (cột-major cho GL) từ hệ số kr/kb của chuẩn màu; limited-range
@@ -204,8 +202,7 @@ static gboolean on_render(GtkGLArea *area, GdkGLContext *ctx, gpointer user) {
         upload_plane(st, 0, 0, st->plane[0], st->pstride[0], vw, vh, GL_R8, GL_RED);
         if (nv12) {
             /* Chroma UV đan xen: texture RG8 (w/2 × h/2); stride byte → pixel RG = /2. */
-            upload_plane(st, 1, 1, st->plane[1], st->pstride[1] / 2, vw / 2, vh / 2, GL_RG8,
-                         GL_RG);
+            upload_plane(st, 1, 1, st->plane[1], st->pstride[1] / 2, vw / 2, vh / 2, GL_RG8, GL_RG);
         } else {
             upload_plane(st, 1, 1, st->plane[1], st->pstride[1], vw / 2, vh / 2, GL_R8, GL_RED);
             upload_plane(st, 2, 2, st->plane[2], st->pstride[2], vw / 2, vh / 2, GL_R8, GL_RED);
@@ -326,8 +323,10 @@ void render_on_frame(const rc_frame *f, void *user) {
 
     atomic_fetch_add(&st->frame_count, 1); /* đo FPS (session.c hiển thị) */
 
-    static atomic_int first = 0;
-    if (atomic_exchange(&first, 1) == 0) g_debug("[ui] frame đầu %dx%d", f->width, f->height);
+    if (!st->logged_first) {
+        st->logged_first = 1;
+        g_debug("[ui] frame đầu %dx%d", f->width, f->height);
+    }
 
     if (size_changed) g_idle_add(resize_to_video, st); /* frame đầu hoặc xoay máy */
 

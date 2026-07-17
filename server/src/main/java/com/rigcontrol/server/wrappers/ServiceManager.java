@@ -1,7 +1,6 @@
 package com.rigcontrol.server.wrappers;
 
 import android.os.IBinder;
-
 import java.lang.reflect.Method;
 
 /** Lấy binder của system service qua {@code android.os.ServiceManager.getService} (hidden API). */

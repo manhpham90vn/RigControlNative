@@ -5,9 +5,9 @@
  * Trừu tượng hoá qua rc_audio nên phase sau có thể thay bằng miniaudio (cross-platform) mà không
  * đụng client.c.
  *
- * Luồng: audio_packet (Opus) → avcodec decode (FLTP) → swresample (S16 interleaved) → snd_pcm_writei.
- * Server encode Opus bằng MediaCodec; ta tự tổng hợp OpusHead từ audio_meta làm extradata cho
- * decoder (gói CONFIG của server bỏ qua).
+ * Luồng: audio_packet (Opus) → avcodec decode (FLTP) → swresample (S16 interleaved) →
+ * snd_pcm_writei. Server encode Opus bằng MediaCodec; ta tự tổng hợp OpusHead từ audio_meta làm
+ * extradata cho decoder (gói CONFIG của server bỏ qua).
  */
 #include "rc_internal.h"
 
@@ -21,7 +21,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define ALSA_LATENCY_US 100000 /* ~100ms buffer */
+/* Buffer ALSA ~60ms: đủ hấp thụ jitter Wi-Fi/scheduler nhưng không cộng trễ đáng kể cho
+ * gaming; backlog phía mạng tự bị chặn bởi backpressure TCP (writei blocking pace server). */
+#define ALSA_LATENCY_US 60000
 
 struct rc_audio {
     AVCodecContext *ctx;
@@ -55,12 +57,12 @@ static int set_opus_extradata(AVCodecContext *ctx, int channels, int sample_rate
     if (!ctx->extradata) return -1;
     uint8_t *h = ctx->extradata;
     memcpy(h, "OpusHead", 8);
-    h[8] = 1;                   /* version */
-    h[9] = (uint8_t)channels;   /* channel count */
-    put_le16(h + 10, 0);        /* pre-skip */
+    h[8] = 1;                      /* version */
+    h[9] = (uint8_t)channels;      /* channel count */
+    put_le16(h + 10, 0);           /* pre-skip */
     put_le32(h + 12, sample_rate); /* input sample rate */
-    put_le16(h + 16, 0);        /* output gain */
-    h[18] = 0;                  /* channel mapping family 0 (mono/stereo) */
+    put_le16(h + 16, 0);           /* output gain */
+    h[18] = 0;                     /* channel mapping family 0 (mono/stereo) */
     ctx->extradata_size = size;
     return 0;
 }

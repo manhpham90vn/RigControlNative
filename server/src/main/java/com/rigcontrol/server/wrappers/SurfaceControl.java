@@ -3,7 +3,6 @@ package com.rigcontrol.server.wrappers;
 import android.graphics.Rect;
 import android.os.IBinder;
 import android.view.Surface;
-
 import java.lang.reflect.Method;
 
 /**
@@ -91,7 +90,8 @@ public final class SurfaceControl {
                 setDisplayProjection = method(
                     "setDisplayProjection", IBinder.class, int.class, Rect.class, Rect.class);
             }
-            setDisplayProjection.invoke(null, displayToken, orientation, layerStackRect, displayRect);
+            setDisplayProjection.invoke(
+                null, displayToken, orientation, layerStackRect, displayRect);
         } catch (Exception e) {
             throw new RuntimeException("SurfaceControl.setDisplayProjection thất bại", e);
         }
@@ -142,7 +142,7 @@ public final class SurfaceControl {
                 getInternalDisplayToken = method("getInternalDisplayToken");
             }
             return getInternalDisplayToken != null ? (IBinder) getInternalDisplayToken.invoke(null)
-                                                    : null;
+                                                   : null;
         } catch (Exception e) {
             return null;
         }

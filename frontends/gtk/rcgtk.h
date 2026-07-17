@@ -21,11 +21,12 @@ typedef struct App App;
 typedef struct {
     App *app;
     rc_client *client;
-    rc_config cfg;      /* cấu hình phiên */
-    char *serial_owned; /* serial của phiên (sở hữu) */
-    char *tcp_owned;    /* "ip[:port]" LAN trực tiếp (sở hữu); NULL = qua adb */
-    int lan_port;       /* cổng stream LAN tự cấp cho phiên; 0 = không phải LAN/không tự cấp */
-    int torn;           /* đã dừng client chưa (tránh double-free) */
+    rc_config cfg;         /* cấu hình phiên */
+    char *serial_owned;    /* serial của phiên (sở hữu) */
+    char *tcp_owned;       /* "ip[:port]" LAN trực tiếp (sở hữu); NULL = qua adb */
+    int lan_port;          /* cổng stream LAN tự cấp cho phiên; 0 = không phải LAN/không tự cấp */
+    int torn;              /* đã dừng client chưa (tránh double-free) */
+    GThread *start_thread; /* thread chạy rc_client_start; join trước khi destroy client */
     GtkWidget *win;
     GtkWidget *bar; /* thanh nút điều khiển (đo chiều cao khi resize cửa sổ) */
     GtkGLArea *gl;
@@ -48,6 +49,7 @@ typedef struct {
 
     atomic_int render_scheduled;
     atomic_int alive;
+    int logged_first; /* đã log frame đầu của phiên chưa (debug) */
 
     int fb_w, fb_h; /* kích thước framebuffer (px) từ signal resize */
 
@@ -60,6 +62,7 @@ typedef struct {
     /* Trạng thái input (UI thread) */
     uint32_t mouse_buttons; /* bitmask RC_BUTTON_* đang giữ */
     float dev_x, dev_y;     /* vị trí con trỏ gần nhất theo pixel thiết bị */
+    uint8_t keys_down[32];  /* bitmap Android keycode (<256) đã gửi KEY DOWN, chờ UP */
 } Session;
 
 struct App {
@@ -76,7 +79,7 @@ struct App {
     GtkCheckButton *cb_control; /* tick = bật điều khiển; bỏ tick = chỉ xem */
     GtkCheckButton *cb_fps;
     GtkCheckButton *cb_lan; /* ô Wi-Fi: stream LAN trực tiếp thay vì adb tunnel */
-    GList *sessions; /* Session* — giải phóng khi thoát app */
+    GList *sessions;        /* Session* — giải phóng khi thoát app */
 };
 
 /* render.c */

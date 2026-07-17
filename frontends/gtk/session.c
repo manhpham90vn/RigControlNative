@@ -30,7 +30,9 @@ static int alloc_lan_port(App *app) {
 static gpointer start_thread(gpointer user) {
     Session *st = user;
     rc_status r = rc_client_start(st->client);
-    if (r != RC_OK) g_warning("[core] start thất bại: %s", rc_status_str(r));
+    /* Phiên bị đóng giữa chừng (abort) thì lỗi là chủ đích — không cần cảnh báo. */
+    if (r != RC_OK && atomic_load(&st->alive))
+        g_warning("[core] start thất bại: %s", rc_status_str(r));
     return NULL;
 }
 
@@ -42,12 +44,17 @@ static void on_status(rc_status code, const char *msg, void *user) {
         g_warning("[core] %s: %s", rc_status_str(code), msg ? msg : "");
 }
 
-/* Timer 1s trên UI thread: hiện số frame nhận được trong giây vừa qua. */
+/* Timer 1s trên UI thread: hiện FPS + backend decode ("CPU (software)" / "GPU ... (VAAPI)").
+ * Đọc lại mỗi tick vì core có thể fallback hw→sw giữa chừng. */
 static gboolean fps_tick(gpointer user) {
     Session *st = user;
     if (!atomic_load(&st->alive) || !st->fps_label) return G_SOURCE_REMOVE;
-    char buf[32];
-    g_snprintf(buf, sizeof buf, " %d FPS ", atomic_exchange(&st->frame_count, 0));
+    const char *dec = st->client ? rc_client_get_decoder_desc(st->client) : NULL;
+    char buf[96];
+    if (dec)
+        g_snprintf(buf, sizeof buf, " %d FPS · %s ", atomic_exchange(&st->frame_count, 0), dec);
+    else
+        g_snprintf(buf, sizeof buf, " %d FPS ", atomic_exchange(&st->frame_count, 0));
     gtk_label_set_text(GTK_LABEL(st->fps_label), buf);
     return G_SOURCE_CONTINUE;
 }
@@ -90,6 +97,13 @@ static void session_teardown(Session *s) {
         s->fps_timer = 0;
     }
     s->fps_label = NULL;
+    /* Thread start có thể còn đang deploy/chờ kết nối → yêu cầu hủy rồi join TRƯỚC khi
+     * destroy client, tránh use-after-free (thread dùng rc_client sau khi free). */
+    if (s->client) rc_client_abort(s->client);
+    if (s->start_thread) {
+        g_thread_join(s->start_thread);
+        s->start_thread = NULL;
+    }
     rc_client_stop(s->client);
     rc_client_destroy(s->client);
     s->client = NULL;
@@ -146,9 +160,10 @@ void session_new(App *app, const char *serial, const char *tcp_addr) {
 
     s->win = gtk_application_window_new(app->gtk);
     char title[192];
-    const char *tag = s->tcp_owned            ? s->tcp_owned
-                      : serial                ? serial
-                      : (s->cfg.transport == RC_TRANSPORT_TCP ? s->cfg.tcp_addr : "default");
+    const char *tag = s->tcp_owned ? s->tcp_owned
+                      : serial
+                          ? serial
+                          : (s->cfg.transport == RC_TRANSPORT_TCP ? s->cfg.tcp_addr : "default");
     g_snprintf(title, sizeof title, "RigControlNative — %s%s", tag ? tag : "default",
                s->tcp_owned ? " (LAN)" : "");
     gtk_window_set_title(GTK_WINDOW(s->win), title);
@@ -159,8 +174,8 @@ void session_new(App *app, const char *serial, const char *tcp_addr) {
 
     app->sessions = g_list_prepend(app->sessions, s);
 
-    GThread *t = g_thread_new("rc-start", start_thread, s); /* deploy nền, không đơ UI */
-    g_thread_unref(t);
+    /* Deploy nền, không đơ UI; giữ handle để teardown join trước khi destroy client. */
+    s->start_thread = g_thread_new("rc-start", start_thread, s);
 }
 
 void session_free(gpointer data) {

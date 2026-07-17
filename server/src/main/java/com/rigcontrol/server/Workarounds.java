@@ -2,7 +2,6 @@ package com.rigcontrol.server;
 
 import android.content.pm.ApplicationInfo;
 import android.os.Looper;
-
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 

@@ -107,7 +107,7 @@ static const char *codec_name(rc_codec codec) {
 }
 
 rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, const char *socket_name,
-                            int tcp_port, int *out_pid) {
+                            int tcp_port, const char *token, int *out_pid) {
     if (!cfg) return RC_ERR_INVALID_ARG;
 
     /* Server chạy foreground trong `adb shell` và stream tới khi socket đóng → KHÔNG waitpid,
@@ -115,7 +115,7 @@ rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, const char
     char classpath[64];
     snprintf(classpath, sizeof classpath, "CLASSPATH=%s", RC_SERVER_REMOTE_PATH);
     char kv_max_size[32], kv_bit_rate[32], kv_max_fps[32], kv_codec[24], kv_audio[16],
-        kv_control[16], kv_tcp[16], kv_port[24], kv_socket[96];
+        kv_control[16], kv_tcp[16], kv_port[24], kv_socket[96], kv_token[48];
     snprintf(kv_socket, sizeof kv_socket, "socket_name=%s",
              socket_name ? socket_name : RC_LOCALABSTRACT_NAME);
     snprintf(kv_max_size, sizeof kv_max_size, "max_size=%d", cfg->max_size);
@@ -146,6 +146,10 @@ rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, const char
     a[i++] = kv_control;
     a[i++] = kv_tcp;
     if (tcp_port > 0) a[i++] = kv_port;
+    if (token && *token) {
+        snprintf(kv_token, sizeof kv_token, "token=%s", token);
+        a[i++] = kv_token;
+    }
     a[i] = NULL;
 
     pid_t pid;

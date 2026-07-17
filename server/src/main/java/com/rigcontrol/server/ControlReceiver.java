@@ -5,9 +5,7 @@ import android.view.InputDevice;
 import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
-
 import com.rigcontrol.server.wrappers.InputManager;
-
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -56,7 +54,8 @@ public final class ControlReceiver implements Runnable {
         try {
             while (true) {
                 int type = in.read();
-                if (type < 0) break; // socket đóng
+                if (type < 0)
+                    break; // socket đóng
                 dispatch(type);
             }
         } catch (IOException e) {
@@ -107,7 +106,8 @@ public final class ControlReceiver implements Runnable {
             }
             case Protocol.CTRL_TEXT: {
                 int len = in.readInt();
-                if (len < 0 || len > (1 << 20)) throw new IOException("TEXT len vô lý: " + len);
+                if (len < 0 || len > (1 << 20))
+                    throw new IOException("TEXT len vô lý: " + len);
                 byte[] buf = new byte[len];
                 in.readFully(buf);
                 injectText(new String(buf, "UTF-8"));
@@ -124,20 +124,23 @@ public final class ControlReceiver implements Runnable {
     }
 
     private void injectTouch(int action, float x, float y, float pressure) {
-        if (input == null) return;
+        if (input == null)
+            return;
         x = scaleX(x);
         y = scaleY(y);
         long now = SystemClock.uptimeMillis();
-        if (action == MotionEvent.ACTION_DOWN) lastDownTime = now;
-        MotionEvent e = MotionEvent.obtain(lastDownTime, now, action, x, y, pressure, 1f, 0, 1f, 1f,
-            0, 0);
+        if (action == MotionEvent.ACTION_DOWN)
+            lastDownTime = now;
+        MotionEvent e =
+            MotionEvent.obtain(lastDownTime, now, action, x, y, pressure, 1f, 0, 1f, 1f, 0, 0);
         e.setSource(InputDevice.SOURCE_TOUCHSCREEN);
         input.inject(e);
         e.recycle();
     }
 
     private void injectScroll(float x, float y, float h, float v) {
-        if (input == null) return;
+        if (input == null)
+            return;
         long now = SystemClock.uptimeMillis();
         MotionEvent.PointerProperties[] pp = {new MotionEvent.PointerProperties()};
         pp[0].id = 0;
@@ -154,7 +157,8 @@ public final class ControlReceiver implements Runnable {
     }
 
     private void injectKey(int action, int keycode, int metastate, int repeat) {
-        if (input == null) return;
+        if (input == null)
+            return;
         long now = SystemClock.uptimeMillis();
         KeyEvent e = new KeyEvent(now, now, action, keycode, repeat, metastate,
             KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD);
@@ -162,10 +166,12 @@ public final class ControlReceiver implements Runnable {
     }
 
     private void injectText(String text) {
-        if (input == null || text.isEmpty()) return;
+        if (input == null || text.isEmpty())
+            return;
         KeyCharacterMap kcm = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
         KeyEvent[] events = kcm.getEvents(text.toCharArray());
-        if (events == null) return; // ký tự không map được sang key event
+        if (events == null)
+            return; // ký tự không map được sang key event
         for (KeyEvent e : events) input.inject(e);
     }
 }

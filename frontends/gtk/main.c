@@ -11,6 +11,7 @@
  *   RC_AUDIO      0/1 (mặc định 0)
  *   RC_CONTROL    0/1 (mặc định 1; 0 = view-only)
  *   RC_SHOW_FPS   0/1 (mặc định 1) — overlay FPS trên video
+ *   RC_HWDEC      off/0/no/sw → ép software decode (libcore đọc; mặc định thử hw trước)
  *   RC_SERVER_PATH  đường dẫn jar server (libcore đọc; mặc định "server/rc-server")
  */
 #include "rcgtk.h"

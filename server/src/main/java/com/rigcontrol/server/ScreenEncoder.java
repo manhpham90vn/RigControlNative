@@ -6,11 +6,9 @@ import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.os.IBinder;
 import android.view.Surface;
-
 import com.rigcontrol.server.wrappers.DisplayInfo;
 import com.rigcontrol.server.wrappers.DisplayManager;
 import com.rigcontrol.server.wrappers.SurfaceControl;
-
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
@@ -31,12 +29,14 @@ public final class ScreenEncoder {
     private static final long DEQUEUE_TIMEOUT_US = 100_000; // 100ms
 
     private final Options options;
+    private final DisplayManager displayManager = DisplayManager.create();
 
-    /* Không final: đọc lại khi màn hình xoay (streamTo tự reset encoder). */
-    private int deviceWidth;
-    private int deviceHeight;
-    private int encWidth;
-    private int encHeight;
+    /* Không final: đọc lại khi màn hình xoay (streamTo tự reset encoder). volatile vì
+     * ControlReceiver đọc các kích thước này từ thread khác để scale toạ độ. */
+    private volatile int deviceWidth;
+    private volatile int deviceHeight;
+    private volatile int encWidth;
+    private volatile int encHeight;
     private int layerStack;
 
     public ScreenEncoder(Options options) {
@@ -46,7 +46,7 @@ public final class ScreenEncoder {
 
     /** Đọc DisplayInfo hiện tại và tính kích thước encode; gọi lại sau khi xoay màn hình. */
     private void configure() {
-        DisplayInfo info = DisplayManager.create().getDisplayInfo(DISPLAY_ID);
+        DisplayInfo info = displayManager.getDisplayInfo(DISPLAY_ID);
         if (info == null) {
             throw new RuntimeException("không lấy được DisplayInfo cho display " + DISPLAY_ID);
         }
@@ -56,8 +56,8 @@ public final class ScreenEncoder {
         int[] size = computeVideoSize(info.width, info.height, options.maxSize);
         encWidth = size[0];
         encHeight = size[1];
-        System.out.println("[rc-server] display " + deviceWidth + "x" + deviceHeight
-            + " -> encode " + encWidth + "x" + encHeight);
+        System.out.println("[rc-server] display " + deviceWidth + "x" + deviceHeight + " -> encode "
+            + encWidth + "x" + encHeight);
     }
 
     /** MIME theo options.codec (h264/h265/av1). */
@@ -151,7 +151,7 @@ public final class ScreenEncoder {
     /** true nếu kích thước display hiện tại khác lúc configure() (màn hình đã xoay). */
     private boolean rotationChanged() {
         try {
-            DisplayInfo info = DisplayManager.create().getDisplayInfo(DISPLAY_ID);
+            DisplayInfo info = displayManager.getDisplayInfo(DISPLAY_ID);
             return info != null && (info.width != deviceWidth || info.height != deviceHeight);
         } catch (Exception e) {
             return false;
@@ -190,11 +190,10 @@ public final class ScreenEncoder {
                         buffer = new byte[PACKET_HDR + bufferInfo.size];
                     }
                     bb.get(buffer, PACKET_HDR, bufferInfo.size);
-                    boolean config =
-                        (bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
+                    boolean config = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
                     boolean key = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
-                    writePacket(out, config, key, bufferInfo.presentationTimeUs, buffer,
-                        bufferInfo.size);
+                    writePacket(
+                        out, config, key, bufferInfo.presentationTimeUs, buffer, bufferInfo.size);
                 }
                 if (eos) {
                     break;
@@ -208,21 +207,21 @@ public final class ScreenEncoder {
 
     private MediaFormat createFormat() {
         MediaFormat format = new MediaFormat();
-        format.setString(MediaFormat.KEY_MIME, MediaFormat.MIMETYPE_VIDEO_AVC);
+        format.setString(MediaFormat.KEY_MIME, mime());
         format.setInteger(MediaFormat.KEY_WIDTH, encWidth);
         format.setInteger(MediaFormat.KEY_HEIGHT, encHeight);
-        format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
-            MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+        format.setInteger(
+            MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
         format.setInteger(MediaFormat.KEY_BIT_RATE, options.bitRate);
         int fps = options.maxFps > 0 ? options.maxFps : 60;
         format.setInteger(MediaFormat.KEY_FRAME_RATE, fps);
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL_S);
-        format.setInteger(MediaFormat.KEY_BITRATE_MODE,
-            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR);
+        format.setInteger(
+            MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR);
         // Gợi ý low-latency (bỏ qua nếu encoder không hỗ trợ).
         format.setInteger(MediaFormat.KEY_LATENCY, 1);
         format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1); // API 30+
-        format.setInteger(MediaFormat.KEY_PRIORITY, 0);    // 0 = realtime
+        format.setInteger(MediaFormat.KEY_PRIORITY, 0); // 0 = realtime
         format.setFloat("max-fps-to-encoder", fps);
         return format;
     }
@@ -233,8 +232,7 @@ public final class ScreenEncoder {
         try {
             SurfaceControl.setDisplaySurface(display, surface);
             SurfaceControl.setDisplayProjection(display, 0,
-                new Rect(0, 0, deviceWidth, deviceHeight),
-                new Rect(0, 0, encWidth, encHeight));
+                new Rect(0, 0, deviceWidth, deviceHeight), new Rect(0, 0, encWidth, encHeight));
             SurfaceControl.setDisplayLayerStack(display, layerStack);
         } finally {
             SurfaceControl.closeTransaction();

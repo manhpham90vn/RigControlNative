@@ -1,10 +1,8 @@
 package com.rigcontrol.server;
 
 import android.os.IBinder;
-
 import com.rigcontrol.server.wrappers.ServiceManager;
 import com.rigcontrol.server.wrappers.SurfaceControl;
-
 import java.lang.reflect.Method;
 
 /**
@@ -69,7 +67,8 @@ public final class DeviceController {
 
     private void statusBarCall(String method) throws Exception {
         Object sb = statusBar();
-        if (sb == null) return;
+        if (sb == null)
+            return;
         sb.getClass().getMethod(method).invoke(sb);
     }
 
@@ -84,7 +83,8 @@ public final class DeviceController {
 
     private void rotate() throws Exception {
         Object wm = windowManager();
-        if (wm == null) return;
+        if (wm == null)
+            return;
 
         int rotation = 0;
         try {

@@ -111,8 +111,9 @@ void rc_client_stop(rc_client *c);
 void rc_client_destroy(rc_client *c);
 ```
 
-**Threading**: 1 thread nhận network + demux, 1 thread decode; frame đẩy về UI thread qua
-callback (GTK marshal bằng `g_idle_add`).
+**Threading**: 1 thread nhận network + demux + decode (H.264 low-delay, decode ngay trên
+thread đọc socket — không hàng đợi trung gian); frame đẩy về UI thread qua callback (GTK
+marshal bằng `g_idle_add`). Audio chạy thread riêng.
 
 ## Protocol (chi tiết trong `docs/PROTOCOL.md`)
 
@@ -206,30 +207,37 @@ adb devices               # xác nhận thiết bị
   letterbox giữ tỉ lệ. Đã kiểm chứng render pixel thật từ thiết bị. **Bộ chọn thiết bị trên UI**:
   nhiều máy → hiện danh sách (model + serial) để chọn, một máy → tự kết nối; có nút *Làm mới*.
   Cấu hình qua biến môi trường (`RC_SERIAL`, `RC_TCP_ADDR`, `RC_MAX_SIZE`, `RC_BIT_RATE`,
-  `RC_MAX_FPS`, `RC_AUDIO`, `RC_CONTROL`, `RC_SERVER_PATH`); đặt `RC_SERIAL`/`RC_TCP_ADDR` sẽ
+  `RC_MAX_FPS`, `RC_AUDIO`, `RC_CONTROL`, `RC_HWDEC`, `RC_SERVER_PATH`); đặt `RC_SERIAL`/`RC_TCP_ADDR` sẽ
   bỏ qua bộ chọn và kết nối thẳng. **Wireless adb**: `RC_SERIAL` dạng `ip:port` (hoặc nhập
   vào ô *Kết nối Wi-Fi* trên bộ chọn) → core tự `adb connect` rồi deploy như USB; bật bằng
   `make tcpip` (máy cắm USB) rồi `make connect IP=<ip>` / `make run SERIAL=<ip>:5555`.
 
 - **Phase 4** — điều khiển ngược: server inject qua `InputManager`/`InputManagerGlobal`
   (reflection, Android 14+). Chuột → cảm ứng (nhấn/kéo/thả), cuộn, bàn phím (phím thường → TEXT,
-  phím điều hướng/sửa → KEY), nút thiết bị **BACK/HOME/RECENT/POWER/VOLUME** trên thanh công cụ,
-  và **DEVICE_ACTION** (xoay qua `IWindowManager.freezeRotation`, screen off/on, panel thông báo).
-  Đã kiểm chứng end-to-end: HOME đổi foreground, vuốt mở app drawer, ROTATE đổi `user_rotation`.
+  phím điều hướng/sửa → KEY, tổ hợp **Ctrl/Alt+phím → KEY kèm metastate**), nút thiết bị
+  **BACK/HOME/RECENT/MENU/POWER/VOLUME** trên thanh công cụ, và **DEVICE_ACTION** (xoay qua
+  `IWindowManager.freezeRotation`, screen off/on, panel thông báo — đều có nút trên thanh công
+  cụ). Đã kiểm chứng end-to-end: HOME đổi foreground, vuốt mở app drawer, ROTATE đổi
+  `user_rotation`.
+  > Hạn chế đã biết: gõ **tiếng Việt/ký tự có dấu** chưa hoạt động — server inject TEXT qua
+  > `KeyCharacterMap` (chỉ map được ký tự có trên bàn phím ảo, giống scrcpy chế độ thường);
+  > cần UHID/IME injection ở phase sau.
 - **Phase 5** — audio playback ở desktop: `libcore` giải mã **Opus** (FFmpeg) → `libswresample`
-  (S16 interleaved) → phát qua **ALSA** (blocking, tự pace real-time). OpusHead tự tổng hợp từ
-  `audio_meta`. Thiết bị không có audio / không mở được ALSA → tự bỏ qua, video vẫn chạy. Đã
-  kiểm chứng phát đúng 48000 mẫu/s ra sound card song song với video.
+  (S16 interleaved) → phát qua **ALSA** (blocking, tự pace real-time; buffer ~60ms cho gaming).
+  OpusHead tự tổng hợp từ `audio_meta`. Thiết bị không có audio / không mở được ALSA → tự bỏ
+  qua, video vẫn chạy. Đã kiểm chứng phát đúng 48000 mẫu/s ra sound card song song với video.
 
 > Backend audio hiện dùng **ALSA** (Ubuntu MVP); chuyển sang **miniaudio** (cross-platform) khi
 > port Windows/macOS — `rc_audio` đã trừu tượng hoá sẵn.
 
 - **Phase 6** — LAN transport trực tiếp: transport TCP tự deploy server (`tcp=true`) qua adb rồi
   stream thẳng `ip:27183` không đi vòng adb tunnel (UI: tick *LAN trực tiếp* ở ô Wi-Fi; env:
-  `RC_SERIAL` + `RC_TCP_ADDR`). Hardware decode luôn bật, thử lần lượt **CUDA/NVDEC** (NVIDIA)
-  → **VAAPI** (Intel/AMD) → software: decode trên GPU → hwdownload NV12 (render đã hỗ trợ NV12
-  qua texture RG8); không GPU nào khả dụng thì tự fallback software. Zero-copy dmabuf → GL để
-  phase sau.
+  `RC_SERIAL` + `RC_TCP_ADDR`). Cổng LAN được bảo vệ bằng **token ngẫu nhiên** (client sinh,
+  truyền cho server qua adb; mỗi kết nối TCP phải gửi token trước — xem PROTOCOL §1.2).
+  Hardware decode bật mặc định, thử lần lượt **CUDA/NVDEC** (NVIDIA) → **VAAPI** (Intel/AMD) →
+  software: decode trên GPU → hwdownload NV12 (render đã hỗ trợ NV12 qua texture RG8); decode
+  hw lỗi giữa chừng thì core tự dựng lại decoder software và phát tiếp. Ép software bằng
+  `RC_HWDEC=off`. Zero-copy dmabuf → GL để phase sau.
 
 Còn lại: zero-copy dmabuf (VAAPI → EGLImage), port Windows/macOS (Phase 7).
 

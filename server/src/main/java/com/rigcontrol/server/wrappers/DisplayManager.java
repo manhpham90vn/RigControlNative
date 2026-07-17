@@ -11,9 +11,11 @@ import java.lang.reflect.Method;
  */
 public final class DisplayManager {
     private final Object manager; // android.hardware.display.DisplayManagerGlobal
+    private final Method getDisplayInfoMethod; // cache: gọi lặp lại khi poll xoay màn hình
 
-    private DisplayManager(Object manager) {
+    private DisplayManager(Object manager, Method getDisplayInfoMethod) {
         this.manager = manager;
+        this.getDisplayInfoMethod = getDisplayInfoMethod;
     }
 
     public static DisplayManager create() {
@@ -21,7 +23,8 @@ public final class DisplayManager {
             Class<?> cls = Class.forName("android.hardware.display.DisplayManagerGlobal");
             Method getInstance = cls.getDeclaredMethod("getInstance");
             Object instance = getInstance.invoke(null);
-            return new DisplayManager(instance);
+            Method getInfo = instance.getClass().getMethod("getDisplayInfo", int.class);
+            return new DisplayManager(instance, getInfo);
         } catch (Exception e) {
             throw new RuntimeException("không khởi tạo được DisplayManagerGlobal", e);
         }
@@ -30,9 +33,7 @@ public final class DisplayManager {
     /** Trả về thông tin display theo id (0 = màn hình chính), hoặc null nếu không có. */
     public DisplayInfo getDisplayInfo(int displayId) {
         try {
-            Object info = manager.getClass()
-                             .getMethod("getDisplayInfo", int.class)
-                             .invoke(manager, displayId);
+            Object info = getDisplayInfoMethod.invoke(manager, displayId);
             if (info == null) {
                 return null;
             }

@@ -2,7 +2,6 @@ package com.rigcontrol.server;
 
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
-
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
@@ -52,22 +51,64 @@ public final class DesktopConnection implements Closeable {
     private void openTcp(Options options) throws IOException {
         serverSocket = new ServerSocket(options.port, 8, InetAddress.getByName("0.0.0.0"));
         closeables.add(serverSocket);
-        System.out.println("[rc-server] listen TCP 0.0.0.0:" + options.port);
+        System.out.println("[rc-server] listen TCP 0.0.0.0:" + options.port
+            + (options.token != null ? " (yêu cầu token)" : ""));
 
-        Socket video = serverSocket.accept();
+        Socket video = acceptAuthed(options);
         register(video);
         videoOut = video.getOutputStream();
 
         if (options.audio) {
-            Socket audio = serverSocket.accept();
+            Socket audio = acceptAuthed(options);
             register(audio);
             audioOut = audio.getOutputStream();
         }
         if (options.control) {
-            Socket control = serverSocket.accept();
+            Socket control = acceptAuthed(options);
             register(control);
             controlIn = control.getInputStream();
             controlOut = control.getOutputStream();
+        }
+    }
+
+    /**
+     * Accept một kết nối TCP; nếu server chạy với {@code token=...} thì client phải gửi đúng
+     * token ({@link Protocol#LAN_TOKEN_LEN} byte ASCII) trước khi được phục vụ — cổng LAN mở
+     * cho cả mạng nên đây là hàng rào chống bên lạ chiếm stream/inject input. Kết nối sai
+     * token (hoặc im lặng quá 5s) bị đóng và server accept tiếp.
+     */
+    private Socket acceptAuthed(Options options) throws IOException {
+        while (true) {
+            Socket s = serverSocket.accept();
+            if (options.token == null) {
+                return s;
+            }
+            try {
+                s.setSoTimeout(5000); // client hợp lệ gửi token ngay; đừng để kẻ lạ giữ slot
+                byte[] buf = new byte[Protocol.LAN_TOKEN_LEN];
+                InputStream in = s.getInputStream();
+                int off = 0;
+                while (off < buf.length) {
+                    int n = in.read(buf, off, buf.length - off);
+                    if (n < 0) {
+                        break;
+                    }
+                    off += n;
+                }
+                if (off == buf.length
+                    && java.security.MessageDigest.isEqual(
+                        buf, options.token.getBytes("US-ASCII"))) {
+                    s.setSoTimeout(0);
+                    return s;
+                }
+                System.err.println("[rc-server] kết nối TCP sai token — đóng");
+            } catch (IOException e) {
+                System.err.println("[rc-server] lỗi đọc token: " + e);
+            }
+            try {
+                s.close();
+            } catch (IOException ignored) {
+            }
         }
     }
 

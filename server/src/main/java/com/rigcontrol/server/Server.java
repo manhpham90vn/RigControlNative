@@ -23,8 +23,8 @@ public final class Server {
             DesktopConnection conn = DesktopConnection.open(options);
             try {
                 ScreenEncoder encoder = new ScreenEncoder(options);
-                conn.sendDeviceMeta(Protocol.CODEC_ID_H264, encoder.getWidth(),
-                    encoder.getHeight(), deviceName());
+                conn.sendDeviceMeta(
+                    encoder.codecId(), encoder.getWidth(), encoder.getHeight(), deviceName());
 
                 if (options.audio && conn.getAudioOutput() != null) {
                     Thread at = new Thread(() -> runAudio(conn), "rc-audio");

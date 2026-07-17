@@ -65,6 +65,7 @@ rc_client *rc_client_create(const rc_config *cfg) {
     c->video_fd = c->audio_fd = c->control_fd = c->listen_fd = -1;
     atomic_init(&c->have_meta, 0);
     atomic_init(&c->running, 0);
+    atomic_init(&c->abort_requested, 0);
 
     /* Tên localabstract riêng cho mỗi phiên (đa session, kể cả cùng thiết bị). */
     static atomic_int scid = 0;
@@ -86,11 +87,48 @@ void rc_client_set_status_callback(rc_client *c, rc_status_cb cb, void *user) {
     c->status_user = user;
 }
 
-/* Vòng video: đọc packet → decode → frame_cb, tới khi socket đóng hoặc dừng. */
+/* Mô tả backend decode dễ hiểu cho UI (string literal tĩnh — an toàn trả thẳng ra ngoài). */
+static const char *decoder_desc_of(const rc_decoder *d) {
+    const char *hw = rc_decoder_hw_name(d);
+    if (!hw) return "CPU (software)";
+    if (strcmp(hw, "cuda") == 0) return "GPU NVIDIA (NVDEC)";
+    if (strcmp(hw, "vaapi") == 0) return "GPU Intel/AMD (VAAPI)";
+    return "GPU (hw)"; /* backend hw khác trong tương lai */
+}
+
+const char *rc_client_get_decoder_desc(const rc_client *c) {
+    if (!c) return NULL;
+    return atomic_load(&((rc_client *)c)->decoder_desc);
+}
+
+/* Buffer lớn dần tái sử dụng: đảm bảo *cap >= need. Trả 0 nếu hết bộ nhớ. */
+static int ensure_cap(uint8_t **buf, size_t *cap, size_t need) {
+    if (*cap >= need) return 1;
+    uint8_t *nb = realloc(*buf, need);
+    if (!nb) return 0;
+    *buf = nb;
+    *cap = need;
+    return 1;
+}
+
+/*
+ * Vòng video: đọc packet → decode → frame_cb, tới khi socket đóng hoặc dừng.
+ *
+ * Gói CONFIG (SPS/PPS) không đưa lẻ vào decoder (libavcodec trả INVALIDDATA cho packet
+ * không có VCL NAL) mà được cache rồi GHÉP vào đầu packet kế tiếp — như scrcpy. Bản cache
+ * cũng dùng để mồi lại decoder khi hardware decode lỗi giữa chừng: hủy decoder hw, dựng
+ * software, ghép config + packet hiện tại decode tiếp — hình phục hồi từ keyframe kế.
+ */
 static void *net_thread_fn(void *arg) {
     rc_client *c = arg;
     uint8_t *buf = NULL; /* buffer packet tái sử dụng (demuxer realloc khi thiếu) */
     size_t cap = 0;
+    uint8_t *cfg_buf = NULL; /* bản sao gói CONFIG gần nhất */
+    size_t cfg_len = 0, cfg_cap = 0;
+    uint8_t *merged = NULL; /* buffer ghép config + packet (tái sử dụng) */
+    size_t merged_cap = 0;
+    int need_cfg = 1;    /* decoder (mới) chưa nhận config → ghép vào packet kế */
+    int err_emitted = 0; /* chỉ báo lỗi decode một lần mỗi chuỗi lỗi */
     while (atomic_load(&c->running)) {
         size_t len = 0;
         int is_config = 0, is_key = 0;
@@ -101,9 +139,56 @@ static void *net_thread_fn(void *arg) {
             if (atomic_load(&c->running)) rc_emit_status(c, r, "luồng video kết thúc");
             break;
         }
-        rc_decoder_feed((rc_decoder *)c->decoder, buf, len, is_config, pts, c->frame_cb,
-                        c->frame_user);
+        if (is_config) { /* cache lại, ghép vào packet kế tiếp (cả khi xoay màn hình) */
+            if (ensure_cap(&cfg_buf, &cfg_cap, len)) {
+                memcpy(cfg_buf, buf, len);
+                cfg_len = len;
+                need_cfg = 1;
+            }
+            continue;
+        }
+
+        const uint8_t *fdata = buf;
+        size_t flen = len;
+        if (need_cfg && cfg_len && ensure_cap(&merged, &merged_cap, cfg_len + len)) {
+            memcpy(merged, cfg_buf, cfg_len);
+            memcpy(merged + cfg_len, buf, len);
+            fdata = merged;
+            flen = cfg_len + len;
+        }
+        need_cfg = 0; /* config (nếu có) đã được giao cho decoder */
+
+        r = rc_decoder_feed((rc_decoder *)c->decoder, fdata, flen, 0, pts, c->frame_cb,
+                            c->frame_user);
+        if (r == RC_OK) {
+            err_emitted = 0;
+            continue;
+        }
+        if (rc_decoder_is_hw((rc_decoder *)c->decoder)) {
+            rc_emit_status(c, r, "hardware decode lỗi — chuyển sang CPU (software)");
+            rc_decoder_destroy((rc_decoder *)c->decoder);
+            c->decoder = rc_decoder_create(c->cfg.codec, 0 /* software */);
+            if (!c->decoder) {
+                atomic_store(&c->decoder_desc, NULL);
+                rc_emit_status(c, RC_ERR_DECODE, "không dựng lại được decoder");
+                break;
+            }
+            atomic_store(&c->decoder_desc, decoder_desc_of((rc_decoder *)c->decoder));
+            /* Mồi decoder mới bằng config + packet hiện tại; P-frame thiếu tham chiếu sẽ
+             * lỗi tới keyframe kế — bỏ qua kết quả. */
+            if (cfg_len && ensure_cap(&merged, &merged_cap, cfg_len + len)) {
+                memcpy(merged, cfg_buf, cfg_len);
+                memcpy(merged + cfg_len, buf, len);
+                rc_decoder_feed((rc_decoder *)c->decoder, merged, cfg_len + len, 0, pts,
+                                c->frame_cb, c->frame_user);
+            }
+        } else if (!err_emitted) {
+            err_emitted = 1;
+            rc_emit_status(c, r, "lỗi giải mã (chờ keyframe kế tiếp)");
+        }
     }
+    free(merged);
+    free(cfg_buf);
     free(buf);
     atomic_store(&c->running, 0);
     return NULL;
@@ -135,6 +220,20 @@ static void *audio_thread_fn(void *arg) {
     return NULL;
 }
 
+/* codec_id trong device_meta → rc_codec; -1 nếu không nhận diện được. */
+static int codec_from_meta(uint32_t codec_id) {
+    switch (codec_id) {
+    case RC_CODEC_ID_H264:
+        return RC_CODEC_H264;
+    case RC_CODEC_ID_H265:
+        return RC_CODEC_H265;
+    case RC_CODEC_ID_AV1:
+        return RC_CODEC_AV1;
+    default:
+        return -1;
+    }
+}
+
 rc_status rc_client_start(rc_client *c) {
     if (!c) return RC_ERR_INVALID_ARG;
     if (atomic_load(&c->running)) return RC_OK;
@@ -151,22 +250,33 @@ rc_status rc_client_start(rc_client *c) {
         rc_server_teardown(c);
         return r;
     }
+    if (c->meta.version != RC_PROTO_VERSION) {
+        rc_emit_status(c, RC_ERR_PROTOCOL, "phiên bản protocol của server không khớp");
+        rc_server_teardown(c);
+        return RC_ERR_PROTOCOL;
+    }
+    /* Decoder dựng theo codec server THỰC SỰ dùng (device_meta), không theo cfg gửi đi. */
+    int meta_codec = codec_from_meta(c->meta.codec_id);
+    if (meta_codec < 0) {
+        rc_emit_status(c, RC_ERR_PROTOCOL, "codec trong device_meta không nhận diện được");
+        rc_server_teardown(c);
+        return RC_ERR_PROTOCOL;
+    }
+    c->cfg.codec = (rc_codec)meta_codec;
     atomic_store(&c->have_meta, 1);
     rc_emit_status(c, RC_OK, c->meta.device_name);
 
-    c->decoder = rc_decoder_create(c->cfg.codec);
+    c->decoder = rc_decoder_create(c->cfg.codec, 1 /* thử hw trước */);
     if (!c->decoder) {
         rc_emit_status(c, RC_ERR_DECODE, "khởi tạo decoder thất bại");
         rc_server_teardown(c);
         return RC_ERR_DECODE;
     }
     {
-        const char *hw = rc_decoder_hw_name((rc_decoder *)c->decoder);
+        const char *desc = decoder_desc_of((rc_decoder *)c->decoder);
+        atomic_store(&c->decoder_desc, desc);
         char msg[64];
-        if (hw)
-            snprintf(msg, sizeof msg, "decoder: %s (hw)", hw);
-        else
-            snprintf(msg, sizeof msg, "decoder: software (hw không khả dụng)");
+        snprintf(msg, sizeof msg, "decoder: %s", desc);
         rc_emit_status(c, RC_OK, msg);
     }
 
@@ -194,13 +304,20 @@ rc_status rc_client_start(rc_client *c) {
     return RC_OK;
 }
 
+void rc_client_abort(rc_client *c) {
+    if (!c) return;
+    atomic_store(&c->abort_requested, 1);
+}
+
 void rc_client_stop(rc_client *c) {
     if (!c) return;
+    atomic_store(&c->abort_requested, 1);
     atomic_store(&c->running, 0);
 
     /* Đánh thức thread đang block ở read bằng shutdown; đóng hẳn fd ở teardown. */
     if (c->video_fd >= 0) shutdown(c->video_fd, SHUT_RDWR);
     if (c->audio_fd >= 0) shutdown(c->audio_fd, SHUT_RDWR);
+    if (c->control_fd >= 0) shutdown(c->control_fd, SHUT_RDWR);
 
     if (c->net_thread) {
         pthread_join(*(pthread_t *)c->net_thread, NULL);
@@ -216,6 +333,7 @@ void rc_client_stop(rc_client *c) {
     if (c->decoder) {
         rc_decoder_destroy((rc_decoder *)c->decoder);
         c->decoder = NULL;
+        atomic_store(&c->decoder_desc, NULL);
     }
     if (c->audio_player) {
         rc_audio_destroy((rc_audio *)c->audio_player);

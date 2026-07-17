@@ -41,6 +41,18 @@ accept/connect đúng số socket và đúng thứ tự.
   → giả định server đã chạy sẵn.
 - Lấy IP thiết bị: người dùng nhập tay, hoặc dùng `adb tcpip` + `adb shell ip route` để hỗ trợ.
 
+**Xác thực (token)** — cổng LAN mở cho cả mạng nên cần hàng rào chống máy lạ chiếm stream /
+inject input:
+
+- Khi client tự deploy, nó sinh **token ngẫu nhiên 32 ký tự hex** và truyền cho server qua
+  tham số `token=<hex>` (đi qua adb — kênh tin cậy).
+- Server chạy với `token=...` yêu cầu **mỗi kết nối TCP** gửi đúng 32 byte ASCII token này
+  **trước mọi dữ liệu khác**; sai token hoặc im lặng quá 5 giây → server đóng kết nối đó và
+  accept tiếp (client hợp lệ không bị chặn bởi kẻ đến trước).
+- Server chạy thủ công **không có** `token=` thì bỏ qua bước này (như cũ) — chỉ nên dùng trong
+  mạng tin cậy.
+- USB (adb tunnel) không dùng token: tunnel localabstract đã giới hạn trong máy + thiết bị.
+
 Trong cả hai chế độ, **thứ tự stream không đổi**: video là kết nối/luồng đầu tiên, control là thứ hai.
 
 ---

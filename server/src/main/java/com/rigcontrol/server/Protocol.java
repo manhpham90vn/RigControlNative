@@ -50,4 +50,7 @@ public final class Protocol {
 
     public static final String LOCALABSTRACT_NAME = "rigcontrol";
     public static final int DEFAULT_TCP_PORT = 27183;
+
+    /** Độ dài token hex ASCII gửi đầu mỗi kết nối TCP/LAN khi server chạy với token=... */
+    public static final int LAN_TOKEN_LEN = 32;
 }

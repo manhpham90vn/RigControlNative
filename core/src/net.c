@@ -2,9 +2,11 @@
 #include "rc_internal.h"
 
 #include <errno.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <stdio.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <string.h>
@@ -79,23 +81,27 @@ int rc_net_accept(int listen_fd) {
     return fd;
 }
 
+/* Connect TCP tới host (IP literal hoặc hostname — getaddrinfo, thử lần lượt từng địa chỉ). */
 int rc_net_connect_tcp(const char *host, int port) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
+    char portstr[8];
+    snprintf(portstr, sizeof portstr, "%d", port);
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
 
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof addr);
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
-        close(fd);
-        return -1;
-    }
+    struct addrinfo *res = NULL;
+    if (getaddrinfo(host, portstr, &hints, &res) != 0) return -1;
 
-    if (connect(fd, (struct sockaddr *)&addr, sizeof addr) < 0) {
+    int fd = -1;
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) continue;
+        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
         close(fd);
-        return -1;
+        fd = -1;
     }
-    set_low_latency(fd);
+    freeaddrinfo(res);
+    if (fd >= 0) set_low_latency(fd);
     return fd;
 }

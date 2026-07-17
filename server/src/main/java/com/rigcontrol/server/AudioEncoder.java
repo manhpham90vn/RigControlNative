@@ -5,7 +5,6 @@ import android.media.AudioRecord;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Build;
-
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
@@ -126,7 +125,8 @@ public final class AudioEncoder {
                 }
 
                 int outIndex;
-                while ((outIndex = codec.dequeueOutputBuffer(bufferInfo, DEQUEUE_TIMEOUT_US)) >= 0) {
+                while (
+                    (outIndex = codec.dequeueOutputBuffer(bufferInfo, DEQUEUE_TIMEOUT_US)) >= 0) {
                     try {
                         if (bufferInfo.size > 0
                             && (bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) == 0) {

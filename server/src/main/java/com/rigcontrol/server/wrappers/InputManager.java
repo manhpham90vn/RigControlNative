@@ -1,7 +1,6 @@
 package com.rigcontrol.server.wrappers;
 
 import android.view.InputEvent;
-
 import java.lang.reflect.Method;
 
 /**

@@ -39,6 +39,7 @@
 
 #define RC_LOCALABSTRACT_NAME "rigcontrol"
 #define RC_DEFAULT_TCP_PORT 27183
+#define RC_LAN_TOKEN_LEN 32 /* token hex ASCII gửi đầu mỗi kết nối TCP (PROTOCOL §1.2) */
 
 /* ---- Cấu trúc phiên ---- */
 typedef struct {
@@ -76,10 +77,16 @@ struct rc_client {
     rc_device_meta meta;
     atomic_int have_meta;
 
-    int server_pid;        /* pid tiến trình `adb shell app_process` (USB); 0 = không có */
-    char socket_name[64];  /* tên localabstract riêng của session (đa phiên) */
+    int server_pid;       /* pid tiến trình `adb shell app_process` (USB); 0 = không có */
+    char socket_name[64]; /* tên localabstract riêng của session (đa phiên) */
+    char lan_token[33];   /* token hex 32 ký tự cho LAN trực tiếp; "" = không dùng */
 
     atomic_int running;
+    atomic_int abort_requested; /* rc_client_abort: deploy/start đang chạy phải thoát sớm */
+
+    /* Mô tả backend decode cho UI (trỏ vào string literal tĩnh — đọc/ghi atomic, không free).
+     * NULL = chưa có decoder. Net thread cập nhật khi fallback hw→sw. */
+    const char *_Atomic decoder_desc;
     /* Thread handles được khai báo trong client.c (pthread) để tránh include ở header này. */
     void *net_thread;   /* pthread_t*  — vòng video */
     void *audio_thread; /* pthread_t*  — vòng audio */
@@ -103,9 +110,10 @@ rc_status rc_adb_push(const char *serial, const char *local, const char *remote)
 rc_status rc_adb_reverse(const char *serial, const char *remote, int local_port);
 rc_status rc_adb_reverse_remove(const char *serial, const char *remote);
 /* Chạy server qua app_process (nền, không chặn); trả pid tiến trình adb qua *out_pid.
- * tcp_port > 0 → server listen TCP cổng đó (LAN); ngược lại connect localabstract socket_name. */
+ * tcp_port > 0 → server listen TCP cổng đó (LAN); ngược lại connect localabstract socket_name.
+ * token != NULL/"" → server yêu cầu mỗi kết nối TCP gửi token trước (xác thực LAN). */
 rc_status rc_adb_run_server(const char *serial, const rc_config *cfg, const char *socket_name,
-                            int tcp_port, int *out_pid);
+                            int tcp_port, const char *token, int *out_pid);
 #define RC_SERVER_REMOTE_PATH "/data/local/tmp/rc-server"
 
 /* server_deploy.c — đẩy + chạy rc-server, thiết lập tunnel, trả về video/control fd */
@@ -122,9 +130,9 @@ rc_status rc_demux_read_packet(int fd, uint8_t **buf, size_t *cap, size_t *out_l
 
 /* decoder.c — bọc FFmpeg libavcodec */
 typedef struct rc_decoder rc_decoder;
-/* Luôn thử hardware decode (CUDA/NVDEC rồi VAAPI, output NV12 qua hwdownload);
- * không backend nào mở được → fallback software. */
-rc_decoder *rc_decoder_create(rc_codec codec);
+/* allow_hw != 0 → thử hardware decode (CUDA/NVDEC rồi VAAPI, output NV12 qua hwdownload);
+ * không backend nào mở được (hoặc allow_hw=0 / env RC_HWDEC=off) → software. */
+rc_decoder *rc_decoder_create(rc_codec codec, int allow_hw);
 int rc_decoder_is_hw(const rc_decoder *d);
 /* Tên backend hw đang dùng ("vaapi"/"cuda"); NULL nếu software. */
 const char *rc_decoder_hw_name(const rc_decoder *d);
@@ -133,7 +141,7 @@ void rc_decoder_destroy(rc_decoder *d);
 rc_status rc_decoder_feed(rc_decoder *d, const uint8_t *data, size_t len, int is_config,
                           int64_t pts_us, rc_frame_cb cb, void *user);
 
-/* audio.c — giải mã (FFmpeg) + phát (miniaudio) audio Opus/AAC/PCM */
+/* audio.c — giải mã (FFmpeg) + phát audio Opus qua ALSA (Ubuntu MVP; miniaudio khi port) */
 typedef struct rc_audio rc_audio;
 rc_audio *rc_audio_create(const rc_audio_meta *meta);
 void rc_audio_destroy(rc_audio *a);

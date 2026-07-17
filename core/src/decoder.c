@@ -12,7 +12,9 @@
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixfmt.h>
 
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 struct rc_decoder {
     AVCodecContext *ctx;
@@ -69,7 +71,15 @@ static enum AVCodecID av_codec_id(rc_codec codec) {
     }
 }
 
-rc_decoder *rc_decoder_create(rc_codec codec) {
+/* env RC_HWDEC=off/0/no/sw → ép software decode (escape hatch khi driver hw lỗi). */
+static int hwdec_env_disabled(void) {
+    const char *e = getenv("RC_HWDEC");
+    if (!e || !*e) return 0;
+    return strcmp(e, "off") == 0 || strcmp(e, "0") == 0 || strcmp(e, "no") == 0 ||
+           strcmp(e, "sw") == 0;
+}
+
+rc_decoder *rc_decoder_create(rc_codec codec, int allow_hw) {
     rc_decoder *d = calloc(1, sizeof(*d));
     if (!d) return NULL;
 
@@ -84,10 +94,11 @@ rc_decoder *rc_decoder_create(rc_codec codec) {
     d->ctx->flags2 |= AV_CODEC_FLAG2_FAST;
     d->ctx->thread_count = 1;
 
-    /* Luôn thử hw decode, lần lượt từng backend; không backend nào mở được → im lặng dùng
-     * software. */
+    /* Thử hw decode lần lượt từng backend (trừ khi bị tắt); không backend nào mở được →
+     * im lặng dùng software. */
     d->hw_pix_fmt = AV_PIX_FMT_NONE;
-    for (size_t k = 0; k < sizeof HW_KINDS / sizeof HW_KINDS[0]; k++) {
+    if (hwdec_env_disabled()) allow_hw = 0;
+    for (size_t k = 0; allow_hw && k < sizeof HW_KINDS / sizeof HW_KINDS[0]; k++) {
         d->hw_ctx = try_hw_device(HW_KINDS[k].type);
         if (d->hw_ctx) {
             d->hw_pix_fmt = HW_KINDS[k].pix_fmt;
@@ -156,20 +167,37 @@ rc_status rc_decoder_feed(rc_decoder *d, const uint8_t *data, size_t len, int is
     d->pkt->dts = pts_us;
 
     int r = avcodec_send_packet(d->ctx, d->pkt);
-    if (r < 0 && r != AVERROR(EAGAIN)) return RC_ERR_DECODE;
+    if (r < 0 && r != AVERROR(EAGAIN)) {
+        char errbuf[64];
+        av_strerror(r, errbuf, sizeof errbuf);
+        fprintf(stderr, "[core] send_packet lỗi (len=%zu cfg=%d): %s\n", len, is_config, errbuf);
+        return RC_ERR_DECODE;
+    }
 
     for (;;) {
         r = avcodec_receive_frame(d->ctx, d->frame);
         if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) break;
         if (r < 0) return RC_ERR_DECODE;
 
-        /* Frame hw (VAAPI/CUDA) nằm trên GPU → download về CPU (NV12). Zero-copy: phase sau. */
+        /* Frame hw (VAAPI/CUDA) nằm trên GPU → download về CPU (NV12). Buffer đích giữ lại
+         * giữa các frame (chỉ cấp lại khi đổi kích thước) để khỏi alloc/free vài MB mỗi frame.
+         * Zero-copy: phase sau. */
         AVFrame *out = d->frame;
         if (d->hw_ctx && d->frame->format == d->hw_pix_fmt) {
-            av_frame_unref(d->sw_frame);
-            if (av_hwframe_transfer_data(d->sw_frame, d->frame, 0) < 0) {
-                av_frame_unref(d->frame);
-                return RC_ERR_DECODE;
+            if (!d->sw_frame->buf[0] || d->sw_frame->width != d->frame->width ||
+                d->sw_frame->height != d->frame->height) {
+                av_frame_unref(d->sw_frame);
+                if (av_hwframe_transfer_data(d->sw_frame, d->frame, 0) < 0) {
+                    av_frame_unref(d->frame);
+                    return RC_ERR_DECODE;
+                }
+            } else if (av_hwframe_transfer_data(d->sw_frame, d->frame, 0) < 0) {
+                /* Transfer vào buffer tái sử dụng lỗi → thử lại với buffer mới. */
+                av_frame_unref(d->sw_frame);
+                if (av_hwframe_transfer_data(d->sw_frame, d->frame, 0) < 0) {
+                    av_frame_unref(d->frame);
+                    return RC_ERR_DECODE;
+                }
             }
             av_frame_copy_props(d->sw_frame, d->frame); /* giữ pts/color info */
             out = d->sw_frame;

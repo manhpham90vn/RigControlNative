@@ -59,8 +59,8 @@ typedef struct {
     int bit_rate; /* bit/s; 0 = mặc định core */
     int max_fps;  /* 0 = không giới hạn */
     rc_codec codec;
-    int control;   /* != 0 để bật kênh điều khiển chuột/bàn phím */
-    int audio;     /* != 0 để stream + phát audio thiết bị */
+    int control; /* != 0 để bật kênh điều khiển chuột/bàn phím */
+    int audio;   /* != 0 để stream + phát audio thiết bị */
     rc_acodec audio_codec;
 } rc_config;
 
@@ -102,6 +102,10 @@ void rc_client_set_status_callback(rc_client *c, rc_status_cb cb, void *user);
 
 /* Deploy server, mở tunnel/kết nối, khởi động thread network + decode. Không chặn. */
 rc_status rc_client_start(rc_client *c);
+
+/* Yêu cầu hủy rc_client_start đang chạy trên thread khác (deploy/chờ kết nối thoát sớm).
+ * Không chặn, an toàn gọi từ thread bất kỳ; sau đó vẫn phải stop/destroy như thường. */
+void rc_client_abort(rc_client *c);
 
 /* Dừng thread và đóng kết nối; an toàn khi gọi nhiều lần. */
 void rc_client_stop(rc_client *c);
@@ -151,6 +155,10 @@ rc_status rc_client_send_device_action(rc_client *c, rc_device_action action);
 
 /* ---- Tiện ích ---- */
 const char *rc_status_str(rc_status code);
+/* Backend đang decode video, chuỗi dễ hiểu cho UI: "GPU NVIDIA (NVDEC)",
+ * "GPU Intel/AMD (VAAPI)" hoặc "CPU (software)". Tự cập nhật nếu core fallback hw→sw giữa
+ * chừng. NULL nếu phiên chưa start/chưa có decoder. An toàn gọi từ thread bất kỳ. */
+const char *rc_client_get_decoder_desc(const rc_client *c);
 /* Kích thước VIDEO (từ device_meta — bằng màn hình thiết bị khi max_size=0, đã làm tròn
  * xuống bội số 8); trả RC_ERR_* nếu chưa handshake. */
 rc_status rc_client_get_device_size(const rc_client *c, int *width, int *height);
