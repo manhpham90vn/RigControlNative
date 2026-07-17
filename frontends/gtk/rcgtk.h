@@ -17,6 +17,21 @@
 
 typedef struct App App;
 
+/* Một thiết bị do rc-agent expose (parse từ đáp ứng discovery — docs/AGENT_PROTOCOL.md §1.2).
+ * serial = "<ip-agent>:<adb_port>" (đúng thứ `adb devices` báo sau khi adb connect). */
+typedef struct {
+    char host[64];    /* IP máy agent (client vừa nối cổng discovery) */
+    char serial[128]; /* "<host>:<adb_port>" — dùng cho mọi thao tác adb */
+    char model[96];
+    char kind[16];   /* "emulator" | "USB" | "wireless" — chỉ để hiển thị */
+    int adb_port;    /* cổng adb public trên máy agent */
+    int stream_base; /* cổng public đầu dải stream; 0 = không relay stream (đi adb tunnel) */
+} AgentDev;
+
+/* TCP tới ip:port, KHÔNG gửi gì, đọc tới EOF, parse theo AGENT_PROTOCOL §1.2. Trả FALSE + set
+ * err nếu banner sai hoặc version lạ. *out = GPtrArray gồm AgentDev* (free func g_free). */
+gboolean agent_scan(const char *ip, int port, GPtrArray **out, GError **err);
+
 /* Một phiên mirror = một cửa sổ + một rc_client (đa session, kể cả cùng thiết bị). */
 typedef struct {
     App *app;
@@ -25,6 +40,8 @@ typedef struct {
     char *serial_owned;    /* serial của phiên (sở hữu) */
     char *tcp_owned;       /* "ip[:port]" LAN trực tiếp (sở hữu); NULL = qua adb */
     int lan_port;          /* cổng stream LAN tự cấp cho phiên; 0 = không phải LAN/không tự cấp */
+    int stream_k;          /* chỉ số k trong dải stream của thiết bị agent (0..STREAM_COUNT-1);
+                            * -1 = không dùng dải agent (wireless trực tiếp / adb tunnel) */
     int torn;              /* đã dừng client chưa (tránh double-free) */
     GThread *start_thread; /* thread chạy rc_client_start; join trước khi destroy client */
     GtkWidget *win;
@@ -80,6 +97,9 @@ struct App {
     GtkCheckButton *cb_control; /* tick = bật điều khiển; bỏ tick = chỉ xem */
     GtkCheckButton *cb_fps;
     GList *sessions; /* Session* — giải phóng khi thoát app */
+    /* Thiết bị do rc-agent expose: khoá "<ip>:<adb_port>" (== serial adb) → AgentDev*.
+     * chooser tra để gắn nhãn "(agent)"; session tra để cấp cổng stream theo thiết bị. */
+    GHashTable *agent_devs;
 };
 
 /* render.c */

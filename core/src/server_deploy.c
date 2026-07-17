@@ -209,7 +209,11 @@ static rc_status deploy_tcp(rc_client *c) {
             return r;
         }
         gen_lan_token(c->lan_token);
-        r = rc_adb_run_server(c->cfg.serial, &c->cfg, NULL, port, c->lan_token, &c->server_pid);
+        /* Server listen cổng TRONG thiết bị (khác cổng public khi qua rc-agent: agent forward
+         * cổng public của tcp_addr về đúng cổng này — docs/AGENT_PROTOCOL.md §2.2). 0 → dùng
+         * chính port của tcp_addr (hành vi cũ, connect == listen). */
+        int dev_port = c->cfg.tcp_device_port > 0 ? c->cfg.tcp_device_port : port;
+        r = rc_adb_run_server(c->cfg.serial, &c->cfg, NULL, dev_port, c->lan_token, &c->server_pid);
         if (r != RC_OK) {
             rc_emit_status(c, r, "không chạy được rc-server (app_process)");
             return r;

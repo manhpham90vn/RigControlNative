@@ -55,6 +55,10 @@ typedef struct {
      * Nếu serial cũng được đặt → core tự push + chạy server (tcp=true) qua adb rồi mới
      * connect; nếu serial NULL → giả định server đã chạy sẵn trên thiết bị. */
     const char *tcp_addr;
+    /* Cổng rc-server listen TRONG thiết bị; 0 = dùng port của tcp_addr (hành vi cũ).
+     * Khác port của tcp_addr khi đi qua rc-agent: agent relay cổng public của tcp_addr về
+     * đúng cổng này trong thiết bị (xem docs/AGENT_PROTOCOL.md §2.2). */
+    int tcp_device_port;
     int max_size; /* giới hạn cạnh dài (px); 0 = full */
     int bit_rate; /* bit/s; 0 = mặc định core */
     int max_fps;  /* 0 = không giới hạn */

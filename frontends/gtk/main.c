@@ -45,6 +45,7 @@ int main(int argc, char **argv) {
     const char *tcp = g_getenv("RC_TCP_ADDR");
     App app;
     memset(&app, 0, sizeof app);
+    app.agent_devs = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
     app.base = (rc_config){
         .serial = g_getenv("RC_SERIAL"),
         .transport = (tcp && *tcp) ? RC_TRANSPORT_TCP : RC_TRANSPORT_USB,
@@ -69,6 +70,7 @@ int main(int argc, char **argv) {
     int rc = g_application_run(G_APPLICATION(gtkapp), argc, argv);
 
     g_list_free_full(app.sessions, session_free);
+    g_hash_table_destroy(app.agent_devs);
     g_object_unref(gtkapp);
     return rc;
 }

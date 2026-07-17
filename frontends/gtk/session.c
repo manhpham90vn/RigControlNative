@@ -6,13 +6,16 @@
 
 #include <string.h>
 
-/* Cổng stream LAN đầu tiên thử cấp; trùng Protocol.DEFAULT_TCP_PORT phía server. */
+/* Cổng stream LAN đầu tiên thử cấp; trùng Protocol.DEFAULT_TCP_PORT phía server và STREAM_BASE
+ * phía rc-agent. */
 #define RC_LAN_BASE_PORT 27183
+#define STREAM_COUNT 4 /* số phiên LAN trực tiếp đồng thời mỗi thiết bị (khớp rc-agent) */
 
 /* Cổng stream LAN trống thấp nhất chưa bị phiên đang chạy nào chiếm. Mỗi phiên LAN khiến server
  * bind một cổng riêng trên thiết bị; cấp cổng khác nhau để mở nhiều phiên cùng máy không dính
  * BindException. Bỏ qua phiên đã torn (server đã bị SIGTERM → cổng trên thiết bị đã giải phóng).
- * Chỉ gọi trên UI thread nên không cần khóa app->sessions. */
+ * Chỉ gọi trên UI thread nên không cần khóa app->sessions. Dùng cho wireless TRỰC TIẾP (connect
+ * == listen); thiết bị qua agent dùng alloc_stream_k theo dải riêng. */
 static int alloc_lan_port(App *app) {
     for (int port = RC_LAN_BASE_PORT;; port++) {
         int used = 0;
@@ -25,6 +28,25 @@ static int alloc_lan_port(App *app) {
         }
         if (!used) return port;
     }
+}
+
+/* k stream trống thấp nhất (0..STREAM_COUNT-1) chưa bị phiên đang sống nào CỦA CÙNG serial
+ * chiếm — thiết bị qua agent có dải stream RIÊNG nên cấp theo từng thiết bị, không toàn cục.
+ * Bỏ phiên torn (cổng trong thiết bị đã giải phóng). -1 = hết → đi adb tunnel. UI thread. */
+static int alloc_stream_k(App *app, const char *serial) {
+    for (int k = 0; k < STREAM_COUNT; k++) {
+        int used = 0;
+        for (GList *l = app->sessions; l; l = l->next) {
+            const Session *s = l->data;
+            if (!s->torn && s->stream_k == k && s->serial_owned && serial &&
+                strcmp(s->serial_owned, serial) == 0) {
+                used = 1;
+                break;
+            }
+        }
+        if (!used) return k;
+    }
+    return -1;
 }
 
 static gpointer start_thread(gpointer user) {
@@ -139,19 +161,42 @@ void session_new(App *app, const char *serial, const char *tcp_addr) {
     s->show_fps = app->sel_show_fps;
     s->serial_owned = serial ? g_strdup(serial) : NULL;
     s->cfg.serial = s->serial_owned;
+    s->stream_k = -1;
     s->tcp_owned = tcp_addr ? g_strdup(tcp_addr) : NULL;
     if (s->tcp_owned) {
         s->cfg.transport = RC_TRANSPORT_TCP;
-        /* Địa chỉ không kèm port (từ bộ chọn Wi-Fi) → tự cấp cổng stream trống theo phiên để
-         * nhiều phiên LAN cùng thiết bị không trùng cổng. Có port sẵn (env RC_TCP_ADDR) → tôn
-         * trọng lựa chọn của người dùng. */
-        if (!strchr(s->tcp_owned, ':')) {
+        AgentDev *ad = serial ? g_hash_table_lookup(app->agent_devs, serial) : NULL;
+        if (strchr(s->tcp_owned, ':')) {
+            /* Địa chỉ kèm port sẵn (env RC_TCP_ADDR) → tôn trọng; connect == listen
+             * (tcp_device_port = 0). */
+            s->cfg.tcp_addr = s->tcp_owned;
+        } else if (ad && ad->stream_base > 0) {
+            /* Thiết bị qua rc-agent: cổng public = stream_base + k (client connect tới máy
+             * agent), server listen RC_LAN_BASE_PORT + k TRONG thiết bị; agent forward giữa hai
+             * cổng (docs/AGENT_PROTOCOL.md §2.2). k cấp theo từng thiết bị. */
+            int k = alloc_stream_k(app, serial);
+            if (k >= 0) {
+                s->stream_k = k;
+                char *withport = g_strdup_printf("%s:%d", s->tcp_owned, ad->stream_base + k);
+                g_free(s->tcp_owned);
+                s->tcp_owned = withport;
+                s->cfg.tcp_addr = s->tcp_owned;
+                s->cfg.tcp_device_port = RC_LAN_BASE_PORT + k;
+            } else {
+                /* Hết STREAM_COUNT phiên LAN đang sống của thiết bị này → đi adb tunnel. */
+                g_free(s->tcp_owned);
+                s->tcp_owned = NULL;
+                s->cfg.transport = RC_TRANSPORT_USB;
+                s->cfg.tcp_addr = NULL;
+            }
+        } else {
+            /* Wireless trực tiếp (không qua agent) → cấp cổng toàn cục, connect == listen. */
             s->lan_port = alloc_lan_port(app);
             char *withport = g_strdup_printf("%s:%d", s->tcp_owned, s->lan_port);
             g_free(s->tcp_owned);
             s->tcp_owned = withport;
+            s->cfg.tcp_addr = s->tcp_owned;
         }
-        s->cfg.tcp_addr = s->tcp_owned;
     }
 
     s->client = rc_client_create(&s->cfg);

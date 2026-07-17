@@ -17,6 +17,7 @@ add_executable(rigcontrol
     session.c
     render.c
     input.c
+    agent.c
 )
 
 target_link_libraries(rigcontrol

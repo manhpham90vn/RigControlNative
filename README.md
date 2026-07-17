@@ -47,7 +47,8 @@ Ba tầng, ranh giới rõ ràng qua **C API**:
 RigControlNative/
   CMakeLists.txt                # top-level: build core + gtk frontend
   README.md
-  docs/PROTOCOL.md              # đặc tả protocol video + control (nguồn sự thật)
+  docs/PROTOCOL.md              # đặc tả protocol video + control server↔core (nguồn sự thật)
+  docs/AGENT_PROTOCOL.md        # đặc tả giao thức discovery + relay của rc-agent (nguồn sự thật)
   server/                       # Android server (Java, build bằng Gradle + android.jar)
     src/main/java/com/rigcontrol/server/
       Server.java               # entry qua app_process, mở socket, điều phối
@@ -182,27 +183,34 @@ adb devices               # xác nhận thiết bị
 ./build/frontends/gtk/rigcontrol
 ```
 
-### rc-agent — điều khiển thiết bị cắm ở MÁY KHÁC trong LAN
+### rc-agent — điều khiển thiết bị cắm ở MÁY KHÁC (LAN hoặc tailnet)
 
 Khi điện thoại cắm cáp (hoặc emulator chạy) trên một máy khác — ví dụ một máy Mac — chạy
-`rc-agent` trên máy đó; nó tự cấu hình rồi in địa chỉ `ip:port` để dán vào ô
-"Thêm thiết bị Wi-Fi" của app:
+`rc-agent` trên máy đó, rồi ở app **chỉ cần nhập IP của máy agent** (LAN hoặc Tailscale) và bấm
+"Quét agent": app tự hỏi cổng discovery **8888** và liệt kê ra **mọi thiết bị** máy đó đang có,
+cả máy thật lẫn máy ảo. Không phải chép tay địa chỉ nào.
 
-- **Điện thoại USB**: tự `adb tcpip 5555`, đọc IP Wi-Fi của điện thoại, verify cổng và in
-  `<ip-điện-thoại>:5555`. Desktop kết nối thẳng tới điện thoại — agent thoát được.
-- **Emulator** (adbd nằm sau NAT trong guest): tự `adb forward` + relay TCP (bind riêng vào
-  từng IP **LAN + Tailscale** của máy, không mở `0.0.0.0`, bỏ loopback/link-local), in sẵn
-  địa chỉ dán thẳng được (`192.168.1.4:15553`, `100.117.54.81:15553`… — mỗi IP relay bind
-  được một dòng, kèm tên interface); agent chạy tiếp giữ relay (Ctrl-C dọn forward). Dải cổng stream
-  27183-27186 cũng được relay (kèm replay token + tuần tự hoá kênh) để phiên chạy "LAN trực
-  tiếp"; nếu không thì core tự fallback adb tunnel. Relay là C thuần trong agent — không cần
+Agent là **trạm chung chuyển**: mọi thiết bị được expose lại dưới địa chỉ của *máy agent*, mỗi
+máy một cổng adb riêng (15553, 15554…). IP của điện thoại không bao giờ xuất hiện — nhờ vậy máy
+ở xa qua tailnet điều khiển được điện thoại cắm USB, dù điện thoại không hề nằm trong tailnet.
+
+- **Điện thoại USB / emulator**: tự `adb tcpip 5555` + `adb forward` rồi relay TCP.
+- **Máy đã wireless adb**: relay thẳng tới địa chỉ trong serial.
+- Relay bind riêng vào từng IP **LAN + Tailscale + loopback**, không mở `0.0.0.0`. Mỗi thiết bị
+  còn có dải cổng stream riêng (kèm replay token + tuần tự hoá kênh) để phiên chạy "LAN trực
+  tiếp"; không được thì core tự fallback adb tunnel. Relay là C thuần trong agent — không cần
   `socat`.
+- Agent **quét lại định kỳ**: cắm thêm điện thoại lúc agent đang chạy vẫn thấy, không phải khởi
+  động lại (khởi động lại = đứt mọi phiên).
+
+Agent phải **chạy liên tục** để giữ relay sống (Ctrl-C dọn `adb forward`). Giao thức đầy đủ:
+[`docs/AGENT_PROTOCOL.md`](docs/AGENT_PROTOCOL.md).
 
 Build trên macOS (chỉ cần Xcode Command Line Tools + adb, không cần GTK/FFmpeg/ALSA):
 
 ```bash
 make agent                                # trên macOS tự tắt GTK + core, tự chọn generator
-./build/frontends/agent/rc-agent          # xem cờ: --tcpip-port --adb-base --no-stream --expose
+./build/frontends/agent/rc-agent          # cờ: --port --tcpip-port --adb-base --no-stream
 ```
 
 Trên macOS, `make agent` tự thêm `-DRC_BUILD_GTK=OFF -DRC_BUILD_CORE=OFF` (libcore cần ALSA
