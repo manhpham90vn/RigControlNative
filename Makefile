@@ -2,9 +2,16 @@
 # Dùng: make help
 
 BUILD_DIR    ?= build
-GENERATOR    ?= Ninja
+# Ưu tiên Ninja nếu có; nếu không (thường trên Mac chỉ có Xcode CLT) → Unix Makefiles.
+GENERATOR    ?= $(shell command -v ninja >/dev/null 2>&1 && echo Ninja || echo "Unix Makefiles")
 BUILD_TYPE   ?= Release
 CMAKE_FLAGS  ?= -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
+
+# macOS: không có GTK4, libcore cần ALSA (Linux-only) → chỉ build rc-agent.
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+CMAKE_FLAGS += -DRC_BUILD_GTK=OFF -DRC_BUILD_CORE=OFF
+endif
 
 # Nguồn để format/lint
 C_SOURCES    := $(shell find core frontends -type f \( -name '*.c' -o -name '*.h' \) 2>/dev/null)
@@ -21,7 +28,7 @@ all: server build ## Build server (dex) + core + front-end
 
 .PHONY: configure
 configure: ## Cấu hình CMake (sinh compile_commands.json)
-	cmake -B $(BUILD_DIR) -G $(GENERATOR) $(CMAKE_FLAGS)
+	cmake -B $(BUILD_DIR) -G "$(GENERATOR)" $(CMAKE_FLAGS)
 
 .PHONY: build
 build: configure ## Build core + front-end (C)
@@ -99,7 +106,7 @@ lint: configure ## Lint C bằng clang-tidy; fallback build -Werror nếu thiế
 
 .PHONY: lint-strict
 lint-strict: ## Build core với -Werror để bắt cảnh báo
-	cmake -B $(BUILD_DIR)-strict -G $(GENERATOR) $(CMAKE_FLAGS) \
+	cmake -B $(BUILD_DIR)-strict -G "$(GENERATOR)" $(CMAKE_FLAGS) \
 		-DCMAKE_C_FLAGS="-Wall -Wextra -Werror"
 	cmake --build $(BUILD_DIR)-strict --target rccore
 

@@ -4,8 +4,10 @@
  *   - Điện thoại USB: bật `adb tcpip` rồi in "ip:port" CỦA ĐIỆN THOẠI để nhập vào ô
  *     "Thêm thiết bị Wi-Fi" (desktop kết nối thẳng tới điện thoại — agent thoát được).
  *   - Emulator (adbd nằm sau NAT trong guest, chỉ với tới từ localhost qua `adb forward`):
- *     adb forward + relay TCP 0.0.0.0 → "mở NAT port" cổng adb và dải cổng stream LAN ra
- *     mạng; in "ip-máy-này:port" để nhập vào app. Agent phải chạy tiếp giữ relay sống.
+ *     adb forward + relay TCP → "mở NAT port" cổng adb và dải cổng stream ra mạng; in
+ *     "ip-máy-này:port" để nhập vào app. Agent phải chạy tiếp giữ relay sống.
+ *     Relay bind riêng vào từng IP LAN + Tailscale (không dùng 0.0.0.0 để khỏi lỡ mở ra
+ *     interface public; không bind loopback vì máy này đã có adb forward localhost sẵn).
  *
  * C thuần POSIX (poll/getifaddrs/posix_spawnp — không epoll/SOCK_NONBLOCK để build được trên
  * macOS), không phụ thuộc core/GTK; chỉ cần `adb` trong PATH.
@@ -160,7 +162,8 @@ static int tcp_connect_timeout(const char *host, int port, int timeout_ms) {
     return fd;
 }
 
-static int tcp_listen_any(int port) {
+/* Bind vào một IPv4 cụ thể (IP LAN hoặc Tailscale của máy này), không phải INADDR_ANY. */
+static int tcp_listen_addr(const char *ip, int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     int one = 1;
@@ -168,8 +171,11 @@ static int tcp_listen_any(int port) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof addr);
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, ip, &addr.sin_addr) != 1) {
+        close(fd);
+        return -1;
+    }
     if (bind(fd, (struct sockaddr *)&addr, sizeof addr) < 0 || listen(fd, 8) < 0) {
         close(fd);
         return -1;
@@ -402,6 +408,7 @@ static int host_ips(char ips[][64], char names[][32], int cap) {
         if (iface_skipped(ifa->ifa_name)) continue;
         struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
         if (!inet_ntop(AF_INET, &sin->sin_addr, ips[n], 64)) continue;
+        if (strncmp(ips[n], "169.254.", 8) == 0) continue; /* link-local (awdl/APIPA) */
         snprintf(names[n], 32, "%s", ifa->ifa_name);
         n++;
     }
@@ -462,21 +469,36 @@ static void setup_usb_phone(const Dev *d, int tcpip_port) {
            ok ? "" : "  (chưa xác minh được cổng — kiểm tra hai máy cùng mạng)");
 }
 
-/* Emulator/thiết bị --expose: forward adbd guest ra localhost rồi relay ra 0.0.0.0. */
+/* Emulator/thiết bị --expose: forward adbd guest ra localhost rồi relay ra IP LAN/Tailscale. */
+#define MAX_LISTENERS 64
 static int g_nls = 0;
-static Listener g_ls[16];
+static Listener g_ls[MAX_LISTENERS];
 static Group g_stream_group = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0};
 
-static int add_listener(int pub_port, int dst_port, Group *group) {
-    if (g_nls >= (int)(sizeof g_ls / sizeof g_ls[0])) return -1;
-    int fd = tcp_listen_any(pub_port);
-    if (fd < 0) {
-        fprintf(stderr, "✗ không bind được cổng %d (đang bị chiếm?)\n", pub_port);
-        return -1;
+/* IP LAN + Tailscale của máy này — mỗi IP một listener cho cùng một cổng public. */
+static char g_bind_ips[8][64];
+static char g_bind_ifs[8][32];
+static int g_nbind = 0;
+
+/* Mở listener trên MỌI IP đã chọn cho cùng pub_port. Thành công nếu bind được ≥1 IP.
+ * bound != NULL: nhận bitmask index các IP bind được (để in đúng địa chỉ đang nghe). */
+static int add_listener(int pub_port, int dst_port, Group *group, unsigned *bound) {
+    int made = 0;
+    if (bound) *bound = 0;
+    for (int i = 0; i < g_nbind; i++) {
+        if (g_nls >= MAX_LISTENERS) break;
+        int fd = tcp_listen_addr(g_bind_ips[i], pub_port);
+        if (fd < 0) {
+            fprintf(stderr, "✗ không bind được %s:%d (đang bị chiếm?)\n", g_bind_ips[i],
+                    pub_port);
+            continue;
+        }
+        g_ls[g_nls++] = (Listener){.fd = fd, .pub_port = pub_port, .dst_port = dst_port,
+                                   .group = group};
+        if (bound) *bound |= 1u << i;
+        made++;
     }
-    g_ls[g_nls++] = (Listener){.fd = fd, .pub_port = pub_port, .dst_port = dst_port,
-                               .group = group};
-    return 0;
+    return made > 0 ? 0 : -1;
 }
 
 /* adbd trong guest có nghe TCP không: adb connect qua forward rồi get-state. */
@@ -512,7 +534,8 @@ static void setup_emulator(const Dev *d, int idx, int adb_base, int tcpip_port, 
             return;
         }
     }
-    if (add_listener(pub, loc, NULL) != 0) return;
+    unsigned bound = 0;
+    if (add_listener(pub, loc, NULL, &bound) != 0) return;
 
     int stream_ok = 0;
     if (!no_stream) {
@@ -522,15 +545,23 @@ static void setup_emulator(const Dev *d, int idx, int adb_base, int tcpip_port, 
         stream_ok = 1;
         for (int p = STREAM_BASE; p < STREAM_BASE + STREAM_COUNT; p++) {
             if (adb_forward(d->serial, p + LOC_OFFSET, p) != 0 ||
-                add_listener(p, p + LOC_OFFSET, &g_stream_group) != 0) {
+                add_listener(p, p + LOC_OFFSET, &g_stream_group, NULL) != 0) {
                 stream_ok = 0;
                 break;
             }
         }
     }
-    printf("✓ %s (%s): nhập vào app →  <ip-máy-này>:%d%s\n",
-           d->model[0] ? d->model : "emulator", d->serial, pub,
+    printf("✓ %s (%s)%s\n", d->model[0] ? d->model : "emulator", d->serial,
            stream_ok ? "  (stream LAN trực tiếp qua relay)" : "  (stream qua adb tunnel)");
+    /* Chỉ liệt kê IP mà relay bind được thật — bind hỏng thì địa chỉ đó không nghe. */
+    for (int i = 0, first = 1; i < g_nbind; i++) {
+        if (!(bound & (1u << i))) continue;
+        char addr[80];
+        snprintf(addr, sizeof addr, "%s:%d", g_bind_ips[i], pub);
+        printf("    %s %-24s (%s)\n", first ? "nhập vào app → " : "               ", addr,
+               g_bind_ifs[i]);
+        first = 0;
+    }
 }
 
 /* ---------- main ---------- */
@@ -582,6 +613,14 @@ int main(int argc, char **argv) {
 
     char ips[8][64], ifnames[8][32];
     int nip = host_ips(ips, ifnames, 8);
+    g_nbind = nip;
+    for (int i = 0; i < nip; i++) {
+        snprintf(g_bind_ips[i], 64, "%s", ips[i]);
+        snprintf(g_bind_ifs[i], 32, "%s", ifnames[i]);
+    }
+    if (nip == 0)
+        fprintf(stderr, "⚠ Không thấy IP LAN/Tailscale nào — chỉ điện thoại USB (in IP máy)\n"
+                        "  hoạt động; emulator cần một interface để relay bind vào.\n");
 
     int nemu = 0;
     for (int i = 0; i < ndev; i++) {
@@ -602,16 +641,11 @@ int main(int argc, char **argv) {
 
     if (g_nls == 0) return 0; /* chỉ điện thoại USB → không cần relay, xong việc */
 
-    if (nip > 0) {
-        printf("\nIP của máy này (thay vào <ip-máy-này>):\n");
-        for (int i = 0; i < nip; i++)
-            printf("  %-12s %s\n", ifnames[i], ips[i]);
-    }
     printf("\nRelay đang chạy — giữ cửa sổ này mở, Ctrl-C để dừng và dọn forward.\n");
 
     /* Vòng accept: mỗi kết nối một thread bơm riêng. */
     while (!g_stop) {
-        struct pollfd pfds[16];
+        struct pollfd pfds[MAX_LISTENERS];
         for (int i = 0; i < g_nls; i++) pfds[i] = (struct pollfd){.fd = g_ls[i].fd,
                                                                   .events = POLLIN};
         int r = poll(pfds, (nfds_t)g_nls, 500);
