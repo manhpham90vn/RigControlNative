@@ -2,7 +2,9 @@
 #include "rc_internal.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
+#include <poll.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -81,8 +83,31 @@ int rc_net_accept(int listen_fd) {
     return fd;
 }
 
-/* Connect TCP tới host (IP literal hoặc hostname — getaddrinfo, thử lần lượt từng địa chỉ). */
-int rc_net_connect_tcp(const char *host, int port) {
+/* Connect non-blocking một địa chỉ, chờ tối đa timeout_ms (poll POLLOUT + SO_ERROR).
+ * Không có timeout thì mạng drop gói (firewall/NAT) khiến connect() treo hàng phút. */
+static int connect_addr_timeout(const struct addrinfo *ai, int timeout_ms) {
+    int fd = socket(ai->ai_family, ai->ai_socktype | SOCK_NONBLOCK, ai->ai_protocol);
+    if (fd < 0) return -1;
+    int rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
+    if (rc < 0) {
+        if (errno != EINPROGRESS) goto fail;
+        struct pollfd pfd = {.fd = fd, .events = POLLOUT};
+        if (poll(&pfd, 1, timeout_ms) <= 0) goto fail; /* timeout hoặc lỗi poll */
+        int err = 0;
+        socklen_t sl = sizeof err;
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &sl) < 0 || err != 0) goto fail;
+    }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK);
+    return fd;
+fail:
+    close(fd);
+    return -1;
+}
+
+/* Connect TCP tới host (IP literal hoặc hostname — getaddrinfo, thử lần lượt từng địa chỉ),
+ * mỗi địa chỉ chờ tối đa timeout_ms (<=0 = 5000ms mặc định). */
+int rc_net_connect_tcp(const char *host, int port, int timeout_ms) {
+    if (timeout_ms <= 0) timeout_ms = 5000;
     char portstr[8];
     snprintf(portstr, sizeof portstr, "%d", port);
     struct addrinfo hints;
@@ -94,13 +119,8 @@ int rc_net_connect_tcp(const char *host, int port) {
     if (getaddrinfo(host, portstr, &hints, &res) != 0) return -1;
 
     int fd = -1;
-    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
-        fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-        if (fd < 0) continue;
-        if (connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) break;
-        close(fd);
-        fd = -1;
-    }
+    for (struct addrinfo *ai = res; ai && fd < 0; ai = ai->ai_next)
+        fd = connect_addr_timeout(ai, timeout_ms);
     freeaddrinfo(res);
     if (fd >= 0) set_low_latency(fd);
     return fd;

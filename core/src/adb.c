@@ -5,6 +5,7 @@
 #include "rc_internal.h"
 
 #include <fcntl.h>
+#include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <stdio.h>
@@ -14,8 +15,10 @@
 
 extern char **environ;
 
-/* Chạy adb đồng bộ; quiet=1 thì nuốt stderr (dùng cho lệnh best-effort như reverse --remove). */
-static rc_status adb_run_ex(char *const argv[], int quiet) {
+/* Chạy adb đồng bộ; quiet=1 thì nuốt stderr (dùng cho lệnh best-effort như reverse --remove).
+ * timeout_ms > 0: quá hạn thì kill tiến trình adb và trả RC_ERR_ADB — `adb connect` tới IP
+ * chết treo theo TCP SYN retry (hàng phút) nếu không chặn. */
+static rc_status adb_run_ex(char *const argv[], int quiet, int timeout_ms) {
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_t *pfa = NULL;
     if (quiet) {
@@ -28,13 +31,27 @@ static rc_status adb_run_ex(char *const argv[], int quiet) {
     if (pfa) posix_spawn_file_actions_destroy(pfa);
     if (rc != 0) return RC_ERR_ADB;
     int status = 0;
-    if (waitpid(pid, &status, 0) < 0) return RC_ERR_ADB;
+    if (timeout_ms <= 0) {
+        if (waitpid(pid, &status, 0) < 0) return RC_ERR_ADB;
+    } else {
+        for (int waited = 0;; waited += 50) {
+            pid_t r = waitpid(pid, &status, WNOHANG);
+            if (r == pid) break;
+            if (r < 0) return RC_ERR_ADB;
+            if (waited >= timeout_ms) {
+                kill(pid, SIGKILL);
+                waitpid(pid, NULL, 0);
+                return RC_ERR_ADB;
+            }
+            usleep(50 * 1000);
+        }
+    }
     return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? RC_OK : RC_ERR_ADB;
 }
 
 /* Chạy adb đồng bộ với danh sách argv kết thúc bằng NULL; trả RC_OK nếu exit code 0. */
 static rc_status adb_run(char *const argv[]) {
-    return adb_run_ex(argv, 0);
+    return adb_run_ex(argv, 0, 0);
 }
 
 /* Dựng phần đầu argv có "-s <serial>" nếu serial != NULL. Trả số phần tử đã điền. */
@@ -51,11 +68,11 @@ static int prefix_serial(const char *serial, const char *out[], int cap) {
 rc_status rc_adb_connect(const char *addr) {
     if (!addr || !*addr) return RC_ERR_INVALID_ARG;
     const char *a[4] = {"adb", "connect", addr, NULL};
-    rc_status r = adb_run((char *const *)a);
+    rc_status r = adb_run_ex((char *const *)a, 0, RC_ADB_CONNECT_TIMEOUT_MS);
     if (r != RC_OK) return r;
     /* `adb connect` có thể exit 0 kể cả khi thất bại → xác minh bằng get-state. */
     const char *v[5] = {"adb", "-s", addr, "get-state", NULL};
-    return adb_run_ex((char *const *)v, 1);
+    return adb_run_ex((char *const *)v, 1, 5000);
 }
 
 rc_status rc_adb_push(const char *serial, const char *local, const char *remote) {
@@ -91,7 +108,7 @@ rc_status rc_adb_reverse_remove(const char *serial, const char *remote) {
     a[i++] = "--remove";
     a[i++] = remote_spec;
     a[i] = NULL;
-    return adb_run_ex((char *const *)a, 1); /* best-effort: nuốt "listener not found" */
+    return adb_run_ex((char *const *)a, 1, 0); /* best-effort: nuốt "listener not found" */
 }
 
 static const char *codec_name(rc_codec codec) {

@@ -1,11 +1,14 @@
 /*
  * chooser.c — màn chọn thiết bị: liệt kê `adb devices`, dropdown kích thước/bitrate,
- * kết nối wireless adb qua ô nhập ip:port. Bấm một thiết bị → mở một phiên (đa session).
+ * thêm thiết bị wireless adb qua ô nhập ip:port (chỉ adb connect + cài sẵn rc-server rồi
+ * cập nhật danh sách). Bấm một thiết bị trong danh sách → mở một phiên (đa session).
  */
 #include "rcgtk.h"
 
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/wait.h>
 
 static const int SIZE_VALUES[] = {0, 1920, 1280, 1024, 800};
 static const int BITRATE_VALUES[] = {2000000,  4000000,  8000000, 16000000,
@@ -125,30 +128,110 @@ static void on_refresh(GtkButton *btn, gpointer user) {
     populate_devices((App *)user, list);
 }
 
-/*
- * Mở phiên tới thiết bị wireless adb (core tự `adb connect` vì serial chứa ':').
- * Luôn thử LAN trực tiếp (adb chỉ dùng để deploy server) — độ trễ/overhead thấp hơn adb
- * tunnel; core tự fallback adb tunnel nếu cổng LAN không tới được.
- */
-static void wifi_session_open(App *app, GtkEntry *entry) {
+/* ---------- Thêm thiết bị wireless adb (không mở phiên ngay) ---------- */
+
+/* Chạy adb đồng bộ, nuốt output; TRUE nếu exit 0 trong hạn timeout_ms, quá hạn thì kill
+ * (`adb connect` tới IP chết treo theo TCP SYN retry hàng phút). Chỉ gọi từ thread nền. */
+static gboolean adb_run(const char *const argv[], int timeout_ms) {
+    GPid pid;
+    if (!g_spawn_async(NULL, (gchar **)argv, NULL,
+                       G_SPAWN_SEARCH_PATH | G_SPAWN_STDOUT_TO_DEV_NULL |
+                           G_SPAWN_STDERR_TO_DEV_NULL | G_SPAWN_DO_NOT_REAP_CHILD,
+                       NULL, NULL, &pid, NULL))
+        return FALSE;
+    gboolean ok = FALSE;
+    for (int waited = 0;; waited += 50) {
+        int status = 0;
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) {
+            ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+            break;
+        }
+        if (r < 0) break;
+        if (waited >= timeout_ms) {
+            kill(pid, SIGKILL);
+            waitpid(pid, NULL, 0);
+            break;
+        }
+        g_usleep(50 * 1000);
+    }
+    g_spawn_close_pid(pid);
+    return ok;
+}
+
+typedef struct {
+    App *app;
+    GtkWidget *entry, *btn; /* giữ ref tới khi xong (cửa sổ có thể đóng giữa chừng) */
+    GtkLabel *status;
+    GtkListBox *list;
+    char *addr;
+    char *msg; /* kết quả từ thread nền để hiện lên status */
+} WifiAdd;
+
+static gboolean wifi_add_done(gpointer data) {
+    WifiAdd *ctx = data;
+    gtk_label_set_text(ctx->status, ctx->msg);
+    gtk_widget_set_sensitive(ctx->entry, TRUE);
+    gtk_widget_set_sensitive(ctx->btn, TRUE);
+    populate_devices(ctx->app, ctx->list);
+    g_object_unref(ctx->entry);
+    g_object_unref(ctx->btn);
+    g_object_unref(ctx->status);
+    g_object_unref(ctx->list);
+    g_free(ctx->addr);
+    g_free(ctx->msg);
+    g_free(ctx);
+    return G_SOURCE_REMOVE;
+}
+
+/* adb connect + xác minh get-state (adb connect exit 0 kể cả khi thất bại) + push sẵn
+ * rc-server. Không mở phiên — thiết bị hiện trong danh sách, bấm vào mới mở. */
+static gpointer wifi_add_thread(gpointer data) {
+    WifiAdd *ctx = data;
+    const char *connect_argv[] = {"adb", "connect", ctx->addr, NULL};
+    const char *state_argv[] = {"adb", "-s", ctx->addr, "get-state", NULL};
+    if (!adb_run(connect_argv, 10000) || !adb_run(state_argv, 5000)) {
+        ctx->msg = g_strdup_printf("Kết nối adb tới %s thất bại (kiểm tra ip:port / adb tcpip).",
+                                   ctx->addr);
+    } else {
+        const char *server = g_getenv("RC_SERVER_PATH");
+        if (!server || !*server) server = "server/rc-server"; /* cùng mặc định với libcore */
+        const char *push_argv[] = {"adb",  "-s",   ctx->addr,
+                                   "push", server, "/data/local/tmp/rc-server", NULL};
+        ctx->msg = adb_run(push_argv, 30000)
+                       ? g_strdup_printf("Đã thêm %s — bấm vào thiết bị trong danh sách để mở.",
+                                         ctx->addr)
+                       : g_strdup_printf("Đã kết nối %s nhưng cài rc-server thất bại "
+                                         "(sẽ thử lại khi mở phiên).",
+                                         ctx->addr);
+    }
+    g_idle_add(wifi_add_done, ctx);
+    return NULL;
+}
+
+static void wifi_add(App *app, GtkWidget *entry) {
     const char *addr = gtk_editable_get_text(GTK_EDITABLE(entry));
     if (!addr || !*addr) return;
-    read_settings(app);
-    char host[128];
-    const char *colon = strrchr(addr, ':');
-    size_t n = colon ? (size_t)(colon - addr) : strlen(addr);
-    if (n == 0 || n >= sizeof host) return;
-    memcpy(host, addr, n);
-    host[n] = '\0'; /* không kèm port → session tự cấp cổng stream (mặc định 27183) */
-    session_new(app, addr, host);
+    GtkWidget *btn = g_object_get_data(G_OBJECT(entry), "btn");
+    WifiAdd *ctx = g_new0(WifiAdd, 1);
+    ctx->app = app;
+    ctx->entry = g_object_ref(entry);
+    ctx->btn = g_object_ref(btn);
+    ctx->status = g_object_ref(g_object_get_data(G_OBJECT(entry), "status"));
+    ctx->list = g_object_ref(g_object_get_data(G_OBJECT(entry), "list"));
+    ctx->addr = g_strdup(addr);
+    gtk_widget_set_sensitive(entry, FALSE);
+    gtk_widget_set_sensitive(btn, FALSE);
+    gtk_label_set_text(ctx->status, "Đang kết nối adb và cài rc-server…");
+    g_thread_unref(g_thread_new("wifi-add", wifi_add_thread, ctx));
 }
 
 static void on_wifi_activate(GtkEntry *entry, gpointer user) {
-    wifi_session_open((App *)user, entry);
+    wifi_add((App *)user, GTK_WIDGET(entry));
 }
 
 static void on_wifi_clicked(GtkButton *btn, gpointer user) {
-    wifi_session_open((App *)user, g_object_get_data(G_OBJECT(btn), "entry"));
+    wifi_add((App *)user, g_object_get_data(G_OBJECT(btn), "entry"));
 }
 
 /* ---------- Dựng UI ---------- */
@@ -232,21 +315,34 @@ void chooser_show(App *app) {
     g_signal_connect(refresh, "clicked", G_CALLBACK(on_refresh), app);
     gtk_box_append(GTK_BOX(box), refresh);
 
-    /* Kết nối wireless adb: nhập ip:port (máy đã bật `adb tcpip 5555`). */
+    /* Thêm thiết bị wireless adb: nhập ip:port (máy đã bật `adb tcpip 5555`). Chỉ adb
+     * connect + cài sẵn rc-server rồi cập nhật danh sách — bấm vào thiết bị mới mở phiên. */
     GtkWidget *wifi_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget *entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "192.168.1.x:5555");
-    gtk_widget_set_tooltip_text(entry, "Máy đã bật `adb tcpip 5555`. Luôn thử LAN trực tiếp "
-                                       "(độ trễ thấp hơn), tự chuyển qua adb tunnel nếu cổng "
-                                       "LAN không tới được.");
+    gtk_widget_set_tooltip_text(entry, "Máy đã bật `adb tcpip 5555`. Chỉ kết nối adb và cài "
+                                       "sẵn rc-server; bấm vào thiết bị trong danh sách để mở "
+                                       "phiên (thử LAN trực tiếp, tự chuyển qua adb tunnel "
+                                       "nếu cổng LAN không tới được).");
     gtk_widget_set_hexpand(entry, TRUE);
     g_signal_connect(entry, "activate", G_CALLBACK(on_wifi_activate), app);
     gtk_box_append(GTK_BOX(wifi_row), entry);
-    GtkWidget *wifi_btn = gtk_button_new_with_label("Kết nối Wi-Fi");
+    GtkWidget *wifi_btn = gtk_button_new_with_label("Thêm thiết bị Wi-Fi");
     g_object_set_data(G_OBJECT(wifi_btn), "entry", entry);
     g_signal_connect(wifi_btn, "clicked", G_CALLBACK(on_wifi_clicked), app);
     gtk_box_append(GTK_BOX(wifi_row), wifi_btn);
     gtk_box_append(GTK_BOX(box), wifi_row);
+
+    /* Trạng thái thêm thiết bị (đang kết nối / kết quả) — cập nhật từ wifi_add_done. */
+    GtkWidget *wifi_status = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(wifi_status), 0);
+    gtk_label_set_wrap(GTK_LABEL(wifi_status), TRUE);
+    gtk_widget_add_css_class(wifi_status, "dim-label");
+    gtk_box_append(GTK_BOX(box), wifi_status);
+
+    g_object_set_data(G_OBJECT(entry), "btn", wifi_btn);
+    g_object_set_data(G_OBJECT(entry), "status", wifi_status);
+    g_object_set_data(G_OBJECT(entry), "list", list);
 
     populate_devices(app, GTK_LIST_BOX(list));
     gtk_window_set_child(GTK_WINDOW(win), box);

@@ -155,11 +155,22 @@ static rc_status deploy_usb(rc_client *c) {
     return RC_OK;
 }
 
-/* Connect TCP có retry (server vừa deploy cần thời gian mở cổng listen); hủy sớm khi
- * abort/server chết. Kết nối xong gửi ngay token nếu phiên dùng token (PROTOCOL §1.2). */
-static int connect_retry(rc_client *c, const char *host, int port, int attempts, int delay_ms) {
-    for (int i = 0; i < attempts; i++) {
-        int fd = rc_net_connect_tcp(host, port);
+static int64_t now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* Connect TCP retry trong ngân sách budget_ms (server vừa deploy cần thời gian mở cổng
+ * listen); luôn thử ít nhất 1 lần, hủy sớm khi abort/server chết. Ngân sách bao cả trường
+ * hợp mạng drop gói (mỗi lần connect chờ tối đa 1s) để fallback không phải đợi hàng phút.
+ * Kết nối xong gửi ngay token nếu phiên dùng token (PROTOCOL §1.2). */
+static int connect_retry(rc_client *c, const char *host, int port, int budget_ms) {
+    const int64_t deadline = now_ms() + budget_ms;
+    for (;;) {
+        int64_t remain = deadline - now_ms();
+        int per_try = remain > 1000 ? 1000 : (remain < 100 ? 100 : (int)remain);
+        int fd = rc_net_connect_tcp(host, port, per_try);
         if (fd >= 0) {
             if (c->lan_token[0] && rc_net_write_full(fd, c->lan_token, RC_LAN_TOKEN_LEN) != RC_OK) {
                 close(fd);
@@ -167,10 +178,9 @@ static int connect_retry(rc_client *c, const char *host, int port, int attempts,
             }
             return fd;
         }
-        if (wait_cancelled(c)) return -1;
-        usleep((useconds_t)delay_ms * 1000);
+        if (wait_cancelled(c) || now_ms() >= deadline) return -1;
+        usleep(200 * 1000); /* connection refused trả về ngay → giãn nhịp giữa các lần thử */
     }
-    return -1;
 }
 
 /*
@@ -207,13 +217,14 @@ static rc_status deploy_tcp(rc_client *c) {
         deployed = 1;
     }
 
-    /* Vừa deploy → chờ server listen (tối đa ~10s); server có sẵn → thử 1 lần. */
+    /* Vừa deploy → chờ server listen tối đa ~3s (đủ cho app_process khởi động; giữ ngắn để
+     * fallback adb tunnel không bắt người dùng đợi lâu); server có sẵn → 1 nhịp ngắn. */
     int ok = 0;
-    c->video_fd = connect_retry(c, host, port, deployed ? 40 : 1, 250);
+    c->video_fd = connect_retry(c, host, port, deployed ? 3000 : 1000);
     if (c->video_fd >= 0) {
         ok = 1;
-        if (c->cfg.audio && (c->audio_fd = connect_retry(c, host, port, 4, 250)) < 0) ok = 0;
-        if (ok && c->cfg.control && (c->control_fd = connect_retry(c, host, port, 4, 250)) < 0)
+        if (c->cfg.audio && (c->audio_fd = connect_retry(c, host, port, 1000)) < 0) ok = 0;
+        if (ok && c->cfg.control && (c->control_fd = connect_retry(c, host, port, 1000)) < 0)
             ok = 0;
     }
     if (ok) {

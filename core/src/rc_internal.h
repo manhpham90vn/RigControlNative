@@ -39,6 +39,8 @@
 
 #define RC_LOCALABSTRACT_NAME "rigcontrol"
 #define RC_DEFAULT_TCP_PORT 27183
+/* Hạn cho `adb connect` (IP chết treo theo TCP SYN retry hàng phút nếu không chặn). */
+#define RC_ADB_CONNECT_TIMEOUT_MS 10000
 #define RC_LAN_TOKEN_LEN 32 /* token hex ASCII gửi đầu mỗi kết nối TCP (PROTOCOL §1.2) */
 
 /* ---- Cấu trúc phiên ---- */
@@ -104,7 +106,8 @@ rc_status rc_net_read_full(int fd, void *buf, size_t len);
 rc_status rc_net_write_full(int fd, const void *buf, size_t len);
 int rc_net_listen_loopback(int *out_port);          /* trả fd listen, set *out_port */
 int rc_net_accept(int listen_fd);                   /* trả fd đã accept */
-int rc_net_connect_tcp(const char *host, int port); /* trả fd đã connect */
+/* Trả fd đã connect; mỗi địa chỉ chờ tối đa timeout_ms (<=0 = 5000ms mặc định). */
+int rc_net_connect_tcp(const char *host, int port, int timeout_ms);
 
 /* adb.c — bọc lệnh adb */
 /* adb connect tới "ip:port" (wireless adb) rồi xác minh thiết bị online. */
