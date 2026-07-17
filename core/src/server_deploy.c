@@ -204,20 +204,31 @@ static rc_status deploy_tcp(rc_client *c) {
     }
 
     /* Vừa deploy → chờ server listen (tối đa ~10s); server có sẵn → thử 1 lần. */
+    int ok = 0;
     c->video_fd = connect_retry(c, host, port, deployed ? 40 : 1, 250);
-    if (c->video_fd < 0) {
-        rc_emit_status(c, RC_ERR_CONNECT, "connect video TCP thất bại");
-        return RC_ERR_CONNECT;
+    if (c->video_fd >= 0) {
+        ok = 1;
+        if (c->cfg.audio && (c->audio_fd = connect_retry(c, host, port, 4, 250)) < 0) ok = 0;
+        if (ok && c->cfg.control && (c->control_fd = connect_retry(c, host, port, 4, 250)) < 0)
+            ok = 0;
     }
-    if (c->cfg.audio) {
-        c->audio_fd = connect_retry(c, host, port, 4, 250);
-        if (c->audio_fd < 0) return RC_ERR_CONNECT;
+    if (ok) return RC_OK;
+
+    /* Không với tới cổng LAN dù adb vẫn dùng được → thiết bị sau NAT/firewall (vd emulator,
+     * adb forward qua VPN: IP trong serial là của máy host, không phải của Android). Cùng
+     * đường mạng với adb nhưng cổng stream không được forward → fallback adb tunnel thay vì
+     * fail để người dùng vẫn có hình. */
+    if (deployed && !atomic_load(&c->abort_requested)) {
+        rc_emit_status(c, RC_OK,
+                       "LAN trực tiếp không kết nối được (thiết bị sau NAT/firewall?) — chuyển "
+                       "qua adb tunnel");
+        rc_server_teardown(c); /* đóng fd dở dang + dừng server tcp vừa chạy */
+        c->lan_token[0] = '\0';
+        c->cfg.transport = RC_TRANSPORT_USB; /* teardown cuối phiên sẽ dọn adb reverse */
+        return deploy_usb(c);
     }
-    if (c->cfg.control) {
-        c->control_fd = connect_retry(c, host, port, 4, 250);
-        if (c->control_fd < 0) return RC_ERR_CONNECT;
-    }
-    return RC_OK;
+    rc_emit_status(c, RC_ERR_CONNECT, "connect video TCP thất bại");
+    return RC_ERR_CONNECT;
 }
 
 rc_status rc_server_deploy(rc_client *c) {
