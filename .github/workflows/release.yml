@@ -140,8 +140,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # pkg-config: ffmpeg configure cần để dò dav1d. nasm: assembler cho ffmpeg.
       - name: Cài công cụ build
-        run: brew install cmake nasm dav1d
+        run: brew install cmake nasm pkg-config dav1d
 
       # rc-server (dex) được bundle vào .app để app double-click tự deploy được server.
       - uses: actions/setup-java@v4
