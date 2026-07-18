@@ -1,7 +1,9 @@
 # Build
 /build/
 /build-strict/
+/build-mac/
 /out/
+*.app/
 *.o
 *.a
 *.so

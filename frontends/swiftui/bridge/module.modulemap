@@ -1,0 +1,6 @@
+// Phơi C API của libcore (core/include/rc/rc_client.h) thành một Clang module để Swift
+// `import RCCore`. Compile kèm: -Xcc -I<repo>/core/include  và  -I<repo>/frontends/swiftui/bridge
+module RCCore {
+    header "shim.h"
+    export *
+}

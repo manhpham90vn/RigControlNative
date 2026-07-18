@@ -2,11 +2,17 @@ cmake_minimum_required(VERSION 3.20)
 project(RigControlNative C)
 
 # ---- Tuỳ chọn ----
-option(RC_BUILD_GTK "Build front-end GTK4 (Ubuntu)" ON)
+# GTK chỉ có trên Linux; mặc định TẮT trên macOS (front-end mac là SwiftUI, build riêng bằng
+# toolchain Apple — xem frontends/swiftui).
+if(APPLE)
+    option(RC_BUILD_GTK "Build front-end GTK4 (Ubuntu)" OFF)
+else()
+    option(RC_BUILD_GTK "Build front-end GTK4 (Ubuntu)" ON)
+endif()
 option(RC_BUILD_AGENT "Build rc-agent (CLI cấu hình máy cắm thiết bị/emulator)" ON)
-# libcore cần FFmpeg + ALSA (ALSA là Linux-only) → không build được trên macOS.
-# Mặc định ON, nhưng front-end GTK cần core nên luôn bật kèm.
-option(RC_BUILD_CORE "Build libcore (cần FFmpeg + ALSA, chỉ Linux)" ON)
+# libcore cần FFmpeg + miniaudio (audio backend cross-platform) → build được trên cả Linux lẫn
+# macOS. Front-end GTK cần core nên luôn bật kèm.
+option(RC_BUILD_CORE "Build libcore (cần FFmpeg; audio qua miniaudio)" ON)
 if(RC_BUILD_GTK)
     set(RC_BUILD_CORE ON CACHE BOOL "" FORCE)
 endif()
@@ -35,4 +41,6 @@ if(RC_BUILD_AGENT)
     add_subdirectory(frontends/agent)
 endif()
 
-# frontends/winui và frontends/swiftui build bằng toolchain riêng của nền tảng (Phase 6).
+# frontends/swiftui (macOS) build bằng toolchain Apple — link vào libcore.a mà CMake dựng ở đây.
+# Xem frontends/swiftui/build-mac.sh và frontends/swiftui/README.md.
+# frontends/winui (Windows) build bằng toolchain riêng (phase sau).

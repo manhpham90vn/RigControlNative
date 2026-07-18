@@ -93,6 +93,7 @@ static const char *decoder_desc_of(const rc_decoder *d) {
     if (!hw) return "CPU (software)";
     if (strcmp(hw, "cuda") == 0) return "GPU NVIDIA (NVDEC)";
     if (strcmp(hw, "vaapi") == 0) return "GPU Intel/AMD (VAAPI)";
+    if (strcmp(hw, "videotoolbox") == 0) return "GPU Apple (VideoToolbox)";
     return "GPU (hw)"; /* backend hw khác trong tương lai */
 }
 
@@ -200,7 +201,7 @@ static void *net_thread_fn(void *arg) {
 }
 
 /*
- * Vòng audio: đọc audio_meta, tạo player (Opus→ALSA) rồi feed từng packet. Nếu audio không khả
+ * Vòng audio: đọc audio_meta, tạo player (Opus→miniaudio) rồi feed từng packet. Nếu audio không khả
  * dụng (codec NONE / mở thiết bị lỗi) → player = NULL, chỉ drain để server không nghẽn.
  */
 static void *audio_thread_fn(void *arg) {

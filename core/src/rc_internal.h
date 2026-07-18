@@ -147,7 +147,7 @@ void rc_decoder_destroy(rc_decoder *d);
 rc_status rc_decoder_feed(rc_decoder *d, const uint8_t *data, size_t len, int is_config,
                           int64_t pts_us, rc_frame_cb cb, void *user);
 
-/* audio.c — giải mã (FFmpeg) + phát audio Opus qua ALSA (Ubuntu MVP; miniaudio khi port) */
+/* audio.c — giải mã (FFmpeg) + phát audio Opus qua miniaudio (cross-platform) */
 typedef struct rc_audio rc_audio;
 rc_audio *rc_audio_create(const rc_audio_meta *meta);
 void rc_audio_destroy(rc_audio *a);

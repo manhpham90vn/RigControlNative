@@ -86,8 +86,10 @@ int rc_net_accept(int listen_fd) {
 /* Connect non-blocking một địa chỉ, chờ tối đa timeout_ms (poll POLLOUT + SO_ERROR).
  * Không có timeout thì mạng drop gói (firewall/NAT) khiến connect() treo hàng phút. */
 static int connect_addr_timeout(const struct addrinfo *ai, int timeout_ms) {
-    int fd = socket(ai->ai_family, ai->ai_socktype | SOCK_NONBLOCK, ai->ai_protocol);
+    int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
     if (fd < 0) return -1;
+    /* Non-blocking qua fcntl (SOCK_NONBLOCK là mở rộng Linux, không có trên macOS/BSD). */
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
     int rc = connect(fd, ai->ai_addr, ai->ai_addrlen);
     if (rc < 0) {
         if (errno != EINPROGRESS) goto fail;

@@ -7,7 +7,10 @@ GENERATOR    ?= $(shell command -v ninja >/dev/null 2>&1 && echo Ninja || echo "
 BUILD_TYPE   ?= Release
 CMAKE_FLAGS  ?= -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
 
-# macOS: không có GTK4, libcore cần ALSA (Linux-only) → chỉ build rc-agent.
+# macOS: không có GTK4 → front-end là SwiftUI (build riêng bằng frontends/swiftui/build-mac.sh,
+# xem target `mac`). Các target CMake chung trên mac mặc định chỉ build rc-agent (không cần
+# ffmpeg); libcore vẫn build được trên mac (audio qua miniaudio) nhưng để `make agent` khỏi đòi
+# ffmpeg, để core OFF ở đây — target `mac` tự bật core khi dựng app.
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
 CMAKE_FLAGS += -DRC_BUILD_GTK=OFF -DRC_BUILD_CORE=OFF
@@ -45,6 +48,14 @@ gtk: configure ## Chỉ build front-end GTK (nếu có libgtk-4-dev)
 .PHONY: agent
 agent: configure ## Build rc-agent (CLI chạy trên máy cắm thiết bị/emulator)
 	cmake --build $(BUILD_DIR) --target rc-agent
+
+.PHONY: mac
+mac: ## (macOS) Dựng libcore + app SwiftUI → build-mac/RigControlNative.app
+	./frontends/swiftui/build-mac.sh
+
+.PHONY: run-mac
+run-mac: ## (macOS) Build rồi chạy app SwiftUI (RC_SERIAL=<serial> để mở thẳng)
+	@RC_SERIAL="$(SERIAL)" ./frontends/swiftui/build-mac.sh run
 
 .PHONY: server
 server: ## Build Android rc-server (javac + d8)
@@ -113,15 +124,16 @@ lint-strict: ## Build core với -Werror để bắt cảnh báo
 # ---- Dọn dẹp ----
 
 .PHONY: clean
-clean: ## Xoá thư mục build (C + server)
-	rm -rf $(BUILD_DIR) $(BUILD_DIR)-strict server/build server/rc-server
+clean: ## Xoá thư mục build (C + server + app mac)
+	rm -rf $(BUILD_DIR) $(BUILD_DIR)-strict build-mac server/build server/rc-server
 
 .PHONY: deps
 deps: ## In gợi ý cài dependency
 	@echo "Ubuntu:"
 	@echo "  sudo apt install build-essential cmake ninja-build pkg-config \\"
-	@echo "       libavcodec-dev libavutil-dev libswresample-dev libasound2-dev \\"
+	@echo "       libavcodec-dev libavutil-dev libswresample-dev \\"
 	@echo "       libgtk-4-dev libepoxy-dev clang-format clang-tidy"
+	@echo "  (audio qua miniaudio: dlopen ALSA/PulseAudio lúc chạy — không cần libasound2-dev để build)"
 	@echo "  Android SDK: platforms/android-*/android.jar + build-tools/*/d8 (ANDROID_HOME)"
 
 .PHONY: help

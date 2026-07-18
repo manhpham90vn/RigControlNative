@@ -1,17 +1,22 @@
 /*
  * audio.c — giải mã audio Opus (FFmpeg libavcodec) + phát ra loa desktop.
  *
- * Backend phát (Ubuntu MVP): ALSA (libasound), chế độ blocking để tự pace theo tốc độ phát.
- * Trừu tượng hoá qua rc_audio nên phase sau có thể thay bằng miniaudio (cross-platform) mà không
- * đụng client.c.
+ * Backend phát: miniaudio (cross-platform — CoreAudio trên macOS, WASAPI trên Windows,
+ * ALSA/PulseAudio trên Linux). Trước đây là ALSA thuần (Linux-only); miniaudio cho phép libcore
+ * build và phát audio trên cả ba nền tảng mà không đụng client.c.
  *
- * Luồng: audio_packet (Opus) → avcodec decode (FLTP) → swresample (S16 interleaved) →
- * snd_pcm_writei. Server encode Opus bằng MediaCodec; ta tự tổng hợp OpusHead từ audio_meta làm
- * extradata cho decoder (gói CONFIG của server bỏ qua).
+ * Luồng: audio_packet (Opus) → avcodec decode (FLTP) → swresample (S16 interleaved) → ghi vào
+ * ring buffer (ma_pcm_rb). Thiết bị miniaudio kéo (pull) từ ring trong data callback. Ghi vào
+ * ring là BLOCKING khi đầy — chính cơ chế này pace theo tốc độ phát (giống snd_pcm_writei cũ) nên
+ * backlog phía mạng tự bị chặn bởi backpressure TCP.
+ *
+ * Server encode Opus bằng MediaCodec; ta tự tổng hợp OpusHead từ audio_meta làm extradata cho
+ * decoder (gói CONFIG của server bỏ qua).
  */
 #include "rc_internal.h"
 
-#include <alsa/asoundlib.h>
+#include "miniaudio.h"
+
 #include <libavcodec/avcodec.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/frame.h>
@@ -20,21 +25,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
-/* Buffer ALSA ~60ms: đủ hấp thụ jitter Wi-Fi/scheduler nhưng không cộng trễ đáng kể cho
- * gaming; backlog phía mạng tự bị chặn bởi backpressure TCP (writei blocking pace server). */
-#define ALSA_LATENCY_US 60000
+/* Dung lượng ring ~80ms: đủ hấp thụ jitter Wi-Fi/scheduler nhưng không cộng trễ đáng kể cho
+ * gaming; khi ring đầy, ghi chặn lại → server bị pace qua backpressure TCP. */
+#define RC_AUDIO_BUFFER_MS 80
 
 struct rc_audio {
     AVCodecContext *ctx;
     AVPacket *pkt;
     AVFrame *frame;
     struct SwrContext *swr;
-    snd_pcm_t *pcm;
+
+    ma_device device;
+    ma_pcm_rb rb;
+    int device_ok; /* device đã init (cần uninit khi destroy) */
+    int rb_ok;     /* ring buffer đã init */
+    int started;   /* ma_device_start đã gọi */
+
     int channels;
     int sample_rate;
 
-    int16_t *out; /* buffer S16 interleaved tái sử dụng */
+    int16_t *out; /* buffer S16 interleaved tái sử dụng cho swr_convert */
     int out_cap;  /* số mẫu (frame) đã cấp */
     long frames_played;
 };
@@ -67,16 +79,46 @@ static int set_opus_extradata(AVCodecContext *ctx, int channels, int sample_rate
     return 0;
 }
 
-static snd_pcm_t *alsa_open(int channels, int rate) {
-    snd_pcm_t *pcm = NULL;
-    if (snd_pcm_open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0) return NULL;
-    if (snd_pcm_set_params(pcm, SND_PCM_FORMAT_S16_LE, SND_PCM_ACCESS_RW_INTERLEAVED,
-                           (unsigned)channels, (unsigned)rate, 1 /*resample*/,
-                           ALSA_LATENCY_US) < 0) {
-        snd_pcm_close(pcm);
-        return NULL;
+/* data callback của miniaudio: kéo S16 interleaved từ ring buffer ra thiết bị phát; thiếu dữ
+ * liệu (underrun) thì phát im lặng. Chạy trên thread audio nội bộ của miniaudio. */
+static void audio_data_cb(ma_device *dev, void *out, const void *in, ma_uint32 frame_count) {
+    (void)in;
+    rc_audio *a = (rc_audio *)dev->pUserData;
+    ma_uint8 *dst = (ma_uint8 *)out;
+    ma_uint32 bpf = (ma_uint32)a->channels * sizeof(int16_t);
+    ma_uint32 remaining = frame_count;
+
+    while (remaining > 0) {
+        ma_uint32 n = remaining;
+        void *pread = NULL;
+        if (ma_pcm_rb_acquire_read(&a->rb, &n, &pread) != MA_SUCCESS || n == 0) break;
+        memcpy(dst, pread, (size_t)n * bpf);
+        ma_pcm_rb_commit_read(&a->rb, n);
+        dst += (size_t)n * bpf;
+        remaining -= n;
     }
-    return pcm;
+    if (remaining > 0) memset(dst, 0, (size_t)remaining * bpf); /* underrun → im lặng */
+}
+
+/* Ghi S16 interleaved vào ring, CHẶN tới khi hết dữ liệu (ring đầy thì ngủ ngắn rồi thử lại —
+ * chính cơ chế pace server). Trả về khi đã ghi hết hoặc device/ring lỗi. */
+static void rb_write_blocking(rc_audio *a, const int16_t *buf, int frames) {
+    ma_uint32 bpf = (ma_uint32)a->channels * sizeof(int16_t);
+    while (frames > 0) {
+        ma_uint32 n = (ma_uint32)frames;
+        void *pw = NULL;
+        if (ma_pcm_rb_acquire_write(&a->rb, &n, &pw) != MA_SUCCESS) return;
+        if (n == 0) {
+            /* Ring đầy: ngủ ~2ms cho data callback rút bớt rồi thử lại (pace theo phát). */
+            struct timespec ts = {.tv_sec = 0, .tv_nsec = 2 * 1000 * 1000};
+            nanosleep(&ts, NULL);
+            continue;
+        }
+        memcpy(pw, buf, (size_t)n * bpf);
+        ma_pcm_rb_commit_write(&a->rb, n);
+        buf += (size_t)n * a->channels;
+        frames -= (int)n;
+    }
 }
 
 rc_audio *rc_audio_create(const rc_audio_meta *meta) {
@@ -104,13 +146,36 @@ rc_audio *rc_audio_create(const rc_audio_meta *meta) {
     a->frame = av_frame_alloc();
     if (!a->pkt || !a->frame) goto fail;
 
-    a->pcm = alsa_open(a->channels, a->sample_rate);
-    if (!a->pcm) {
-        fprintf(stderr, "[core] audio: không mở được thiết bị ALSA — bỏ qua audio\n");
+    /* Ring buffer S16 interleaved ~RC_AUDIO_BUFFER_MS; tối thiểu vài period để tránh underrun. */
+    ma_uint32 rb_frames = (ma_uint32)((long)a->sample_rate * RC_AUDIO_BUFFER_MS / 1000);
+    if (rb_frames < 2048) rb_frames = 2048;
+    if (ma_pcm_rb_init(ma_format_s16, (ma_uint32)a->channels, rb_frames, NULL, NULL, &a->rb) !=
+        MA_SUCCESS) {
+        fprintf(stderr, "[core] audio: không cấp được ring buffer — bỏ qua audio\n");
         goto fail;
     }
+    a->rb_ok = 1;
 
-    fprintf(stderr, "[core] audio: phát Opus %dHz %dch qua ALSA\n", a->sample_rate, a->channels);
+    ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
+    cfg.playback.format = ma_format_s16;
+    cfg.playback.channels = (ma_uint32)a->channels;
+    cfg.sampleRate = (ma_uint32)a->sample_rate;
+    cfg.dataCallback = audio_data_cb;
+    cfg.pUserData = a;
+    cfg.performanceProfile = ma_performance_profile_low_latency;
+    if (ma_device_init(NULL, &cfg, &a->device) != MA_SUCCESS) {
+        fprintf(stderr, "[core] audio: không mở được thiết bị phát — bỏ qua audio\n");
+        goto fail;
+    }
+    a->device_ok = 1;
+    if (ma_device_start(&a->device) != MA_SUCCESS) {
+        fprintf(stderr, "[core] audio: không start được thiết bị phát — bỏ qua audio\n");
+        goto fail;
+    }
+    a->started = 1;
+
+    fprintf(stderr, "[core] audio: phát Opus %dHz %dch qua miniaudio (%s)\n", a->sample_rate,
+            a->channels, ma_get_backend_name(a->device.pContext->backend));
     return a;
 
 fail:
@@ -123,10 +188,9 @@ void rc_audio_destroy(rc_audio *a) {
     if (getenv("RC_AUDIO_DEBUG") && a->frames_played)
         fprintf(stderr, "[core] audio: đã phát %ld mẫu (%.1fs)\n", a->frames_played,
                 (double)a->frames_played / (a->sample_rate ? a->sample_rate : 48000));
-    if (a->pcm) {
-        snd_pcm_drain(a->pcm);
-        snd_pcm_close(a->pcm);
-    }
+    if (a->started) ma_device_stop(&a->device);
+    if (a->device_ok) ma_device_uninit(&a->device);
+    if (a->rb_ok) ma_pcm_rb_uninit(&a->rb);
     if (a->swr) swr_free(&a->swr);
     if (a->frame) av_frame_free(&a->frame);
     if (a->pkt) av_packet_free(&a->pkt);
@@ -146,19 +210,6 @@ static int ensure_swr(rc_audio *a, const AVFrame *frame) {
     if (r < 0 || !a->swr) return -1;
     if (swr_init(a->swr) < 0) return -1;
     return 0;
-}
-
-static void alsa_write(rc_audio *a, const int16_t *buf, int frames) {
-    while (frames > 0) {
-        snd_pcm_sframes_t w = snd_pcm_writei(a->pcm, buf, (snd_pcm_uframes_t)frames);
-        if (w < 0) {
-            w = snd_pcm_recover(a->pcm, (int)w, 1 /*silent*/);
-            if (w < 0) return; /* lỗi không phục hồi được: bỏ khối này */
-            continue;
-        }
-        buf += w * a->channels;
-        frames -= (int)w;
-    }
 }
 
 rc_status rc_audio_feed(rc_audio *a, const uint8_t *data, size_t len, int is_config,
@@ -196,7 +247,7 @@ rc_status rc_audio_feed(rc_audio *a, const uint8_t *data, size_t len, int is_con
         int got = swr_convert(a->swr, outp, max_out, (const uint8_t **)a->frame->data,
                               a->frame->nb_samples);
         if (got > 0) {
-            alsa_write(a, a->out, got);
+            rb_write_blocking(a, a->out, got);
             a->frames_played += got;
         }
         av_frame_unref(a->frame);

@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ---- Linux: libcore + front-end GTK4 + rc-agent ----
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cài dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config \
+            libavcodec-dev libavutil-dev libswresample-dev \
+            libgtk-4-dev libepoxy-dev
+      - name: Build libcore + GTK
+        run: make gtk
+      - name: Build rc-agent
+        run: make agent
+
+  # ---- macOS: libcore + front-end SwiftUI + rc-agent ----
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cài ffmpeg (Homebrew)
+        run: brew install ffmpeg cmake
+      - name: Build libcore + app SwiftUI
+        run: make mac
+      - name: Build rc-agent
+        run: make agent
+      - name: Kiểm tra .app
+        run: |
+          test -x build-mac/RigControlNative.app/Contents/MacOS/RigControlNative
+          file build-mac/RigControlNative.app/Contents/MacOS/RigControlNative
+
+  # ---- Android rc-server (Java thuần -> dex) ----
+  server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Cài platform + build-tools
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+      - name: Build rc-server
+        run: ./server/build.sh
+      - name: Kiểm tra dex
+        run: test -s server/rc-server
+
+  # ---- Định dạng C + Java (clang-format) ----
+  # Không chặn CI: kết quả clang-format nhạy theo phiên bản (căn lề comment, bề rộng ký tự UTF-8)
+  # nên bản trên runner có thể lệch bản maintainer dùng. Đây là kiểm tra thông tin; bật chặn lại
+  # (bỏ continue-on-error) khi đã chốt một phiên bản clang-format cố định cho cả repo.
+  format:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cài clang-format
+        run: sudo apt-get update && sudo apt-get install -y clang-format
+      - name: Kiểm tra định dạng
+        run: make format-check

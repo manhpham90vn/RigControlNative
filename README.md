@@ -69,8 +69,12 @@ RigControlNative/
   frontends/
     gtk/                        # MVP (GTK4 + GtkGLArea)
     agent/                      # rc-agent: CLI chạy trên máy cắm thiết bị/emulator (mac/Linux)
+    swiftui/                    # front-end macOS (Swift/SwiftUI + AppKit, MTKView + Metal)
+                                #   build-mac.sh (swiftc, không cần Xcode đầy đủ), bridge/ (module
+                                #   map C API), Sources/*.swift
     winui/                      # phase sau (C++/WinUI 3, SwapChainPanel + D3D11)
-    swiftui/                    # phase sau (Swift/SwiftUI, MTKView + Metal)
+  third_party/
+    miniaudio/                  # backend audio cross-platform (single-header, vendored)
 ```
 
 ## C API (bản phác — `core/include/rc/rc_client.h`)
@@ -153,7 +157,8 @@ marshal bằng `g_idle_add`). Audio chạy thread riêng.
 
 ## Build & chạy (MVP — Ubuntu/GTK)
 
-Yêu cầu: `libavcodec-dev libavutil-dev libswresample-dev libasound2-dev`, `libgtk-4-dev libepoxy-dev` + EGL/GL, `adb` (platform-tools), JDK 11+,
+Yêu cầu: `libavcodec-dev libavutil-dev libswresample-dev`, `libgtk-4-dev libepoxy-dev` + EGL/GL, `adb` (platform-tools), JDK 11+,
+(audio qua **miniaudio** — dlopen ALSA/PulseAudio lúc chạy, không cần `libasound2-dev` để build),
 Android SDK (`platforms/android-*/android.jar` + `build-tools/*/d8`) để build server. **Không cần
 NDK** (server là Java thuần). Thiết bị Android bật USB debugging.
 
@@ -230,6 +235,36 @@ cmake -B build -DRC_BUILD_GTK=OFF -DRC_BUILD_CORE=OFF && cmake --build build --t
 
 Trên Linux: `make agent` (build kèm cả libcore).
 
+## Build & chạy (macOS — front-end SwiftUI)
+
+Front-end macOS viết bằng **Swift/SwiftUI + AppKit**, render bằng **Metal (MTKView)**, dùng chung
+`libcore` (C) như GTK. Ngang tính năng với GTK: chọn thiết bị, quét rc-agent, wireless adb, LAN
+trực tiếp, video + **audio** (miniaudio → Core Audio), điều khiển chuột/bàn phím + nút thiết bị.
+
+Yêu cầu: **Xcode Command Line Tools** (không cần Xcode đầy đủ — build bằng `swiftc` + SDK macOS,
+vốn đã có SwiftUI/Metal), **CMake**, **Homebrew ffmpeg** (`brew install ffmpeg`), **adb**. Build
+`server/rc-server` như GTK (cần JDK + Android SDK) để core tự push khi mở phiên.
+
+```bash
+brew install ffmpeg cmake            # adb: brew install --cask android-platform-tools
+xcode-select --install               # clang/swiftc + SDK
+
+./server/build.sh                    # dex server (một lần; hoặc make server)
+make mac                             # dựng libcore + app → build-mac/RigControlNative.app
+open build-mac/RigControlNative.app  # hoặc: make run-mac SERIAL=<serial>
+```
+
+`make mac` gọi `frontends/swiftui/build-mac.sh`: dựng `libcore` qua CMake (tự bật core, tắt GTK),
+biên dịch toàn bộ `Sources/*.swift` với `swiftc` (module map `bridge/` phơi C API), rồi đóng gói
+`.app` (ad-hoc codesign). Cấu hình qua **cùng bộ biến môi trường như GTK** (`RC_SERIAL`,
+`RC_TCP_ADDR`, `RC_MAX_SIZE`, `RC_BIT_RATE`, `RC_MAX_FPS`, `RC_AUDIO`, `RC_CONTROL`, `RC_SHOW_FPS`,
+`RC_HWDEC`, `RC_SERVER_PATH`); đặt `RC_SERIAL`/`RC_TCP_ADDR` → mở thẳng một phiên, bỏ qua bộ chọn.
+
+> libcore không có generator riêng cho mac: `swiftc` link thẳng `build-mac/core/librccore.a`
+> (static) + FFmpeg (dylib Homebrew, absolute install-name) + framework Core Audio/AppKit/Metal.
+> Hardware decode (VideoToolbox) chưa có — mac dùng **software decode** (CUDA/VAAPI của core tự bỏ
+> qua); đủ mượt cho H.264 nhờ đường low-delay.
+
 ### Định dạng & lint
 
 - `.clang-format` áp cho cả C (LLVM, 4-space) và Java (Google, 4-space).
@@ -244,7 +279,7 @@ Trên Linux: `make agent` (build kèm cả libcore).
 
 ## Trạng thái
 
-🚧 Đang phát triển — **Phase 6**: LAN transport trực tiếp + hardware decode (VAAPI).
+🚧 Đang phát triển — **Phase 7**: port macOS (front-end SwiftUI + Metal, audio miniaudio).
 
 - **Phase 1** — Android `rc-server`: capture + encode video (H.264) và audio (Opus), mở socket
   USB (localabstract) / TCP (LAN), gửi `device_meta`/`audio_meta`. Audio dùng `REMOTE_SUBMIX`
@@ -276,8 +311,11 @@ Trên Linux: `make agent` (build kèm cả libcore).
   OpusHead tự tổng hợp từ `audio_meta`. Thiết bị không có audio / không mở được ALSA → tự bỏ
   qua, video vẫn chạy. Đã kiểm chứng phát đúng 48000 mẫu/s ra sound card song song với video.
 
-> Backend audio hiện dùng **ALSA** (Ubuntu MVP); chuyển sang **miniaudio** (cross-platform) khi
-> port Windows/macOS — `rc_audio` đã trừu tượng hoá sẵn.
+> Backend audio dùng **miniaudio** (single-header, cross-platform): Core Audio trên macOS, WASAPI
+> trên Windows, ALSA/PulseAudio trên Linux — nạp backend theo nền tảng lúc chạy. Trước đây là ALSA
+> thuần (Linux-only); nhờ miniaudio libcore build + phát audio được trên cả ba nền tảng mà không
+> đụng `client.c`. Ghi PCM vào ring buffer là **blocking khi đầy** nên vẫn pace server qua
+> backpressure TCP như `snd_pcm_writei` cũ. Header vendor tại `third_party/miniaudio/`.
 
 - **Phase 6** — LAN transport trực tiếp: transport TCP tự deploy server (`tcp=true`) qua adb rồi
   stream thẳng `ip:27183` không đi vòng adb tunnel (UI: tick *LAN trực tiếp* ở ô Wi-Fi; env:
@@ -288,7 +326,16 @@ Trên Linux: `make agent` (build kèm cả libcore).
   hw lỗi giữa chừng thì core tự dựng lại decoder software và phát tiếp. Ép software bằng
   `RC_HWDEC=off`. Zero-copy dmabuf → GL để phase sau.
 
-Còn lại: zero-copy dmabuf (VAAPI → EGLImage), port Windows/macOS (Phase 7).
+- **Phase 7 (đang làm)** — port **macOS**: front-end **SwiftUI + AppKit**, render **Metal**
+  (MTKView, shader YUV→RGB I420/NV12, letterbox), input chuột/bàn phím → Android keycode/TEXT +
+  navbar thiết bị, chooser + quét rc-agent + wireless adb + LAN trực tiếp — dùng chung `libcore`
+  qua C API (module map). Audio backend chuyển từ ALSA sang **miniaudio** (Core Audio trên mac,
+  cross-platform) nên libcore build + phát audio được trên cả ba nền tảng. Đã kiểm chứng
+  end-to-end với emulator: deploy server → decode H.264 (software) → phát Opus qua Core Audio.
+  Còn lại của mac: hardware decode VideoToolbox, đóng gói/ký chính thức.
+
+Còn lại: zero-copy dmabuf (VAAPI → EGLImage), hardware decode VideoToolbox (mac), port Windows
+(WinUI 3).
 
 ## License
 

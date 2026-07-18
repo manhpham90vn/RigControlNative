@@ -28,12 +28,17 @@ struct rc_decoder {
     int emitted_unsupported;       /* để không spam log format lạ */
 };
 
-/* Các backend hw decode thử theo thứ tự: CUDA/NVDEC (NVIDIA) rồi VAAPI (Intel/AMD),
- * cuối cùng fallback software nếu không backend nào mở được. */
+/* Các backend hw decode thử theo thứ tự, cuối cùng fallback software nếu không backend nào mở
+ * được. macOS: VideoToolbox (GPU Apple) trước. Linux: CUDA/NVDEC (NVIDIA) rồi VAAPI (Intel/AMD).
+ * Backend không thuộc nền tảng hiện tại tự thất bại khi tạo device nên vô hại nếu lọt vào danh
+ * sách. */
 static const struct {
     enum AVHWDeviceType type;
     enum AVPixelFormat pix_fmt;
 } HW_KINDS[] = {
+#ifdef __APPLE__
+    {AV_HWDEVICE_TYPE_VIDEOTOOLBOX, AV_PIX_FMT_VIDEOTOOLBOX},
+#endif
     {AV_HWDEVICE_TYPE_CUDA, AV_PIX_FMT_CUDA},
     {AV_HWDEVICE_TYPE_VAAPI, AV_PIX_FMT_VAAPI},
 };
