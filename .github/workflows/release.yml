@@ -1,0 +1,111 @@
+# Release: push tag `v*` (vd `git tag v0.1.0 && git push origin v0.1.0`) → build + đóng gói
+# + tạo GitHub Release kèm artifact:
+#   rigcontrol-<ver>-linux-x86_64.tar.gz   app GTK + rc-agent + rc-server (build Ubuntu 24.04)
+#   rc-agent-<ver>-macos-universal.tar.gz  rc-agent universal (arm64 + x86_64)
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # tạo release + upload asset
+
+jobs:
+  linux:
+    name: Đóng gói Linux x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cài dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config \
+            libavcodec-dev libavutil-dev libswresample-dev libasound2-dev \
+            libgtk-4-dev libepoxy-dev
+
+      - name: Build rc-server (javac + d8)
+        run: make server
+
+      - name: Build libcore + GTK + rc-agent
+        run: make build
+
+      # Bố cục giữ "server/rc-server" cạnh binary vì app mặc định tìm rc-server theo đường
+      # dẫn tương đối đó (đổi được qua RC_SERVER_PATH).
+      - name: Đóng gói
+        run: |
+          VER="${GITHUB_REF_NAME}"
+          PKG="rigcontrol-${VER}-linux-x86_64"
+          mkdir -p "dist/${PKG}/server"
+          cp build/frontends/gtk/rigcontrol "dist/${PKG}/"
+          cp build/frontends/agent/rc-agent "dist/${PKG}/"
+          cp server/rc-server "dist/${PKG}/server/"
+          cp README.md "dist/${PKG}/"
+          tar -C dist -czf "${PKG}.tar.gz" "${PKG}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: rigcontrol-*-linux-x86_64.tar.gz
+
+  macos-agent:
+    name: Đóng gói rc-agent macOS (universal)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # rc-agent là C thuần POSIX, không dependency → build universal một phát bằng
+      # CMAKE_OSX_ARCHITECTURES (không cần hai runner).
+      - name: Build rc-agent universal
+        run: |
+          cmake -B build -DRC_BUILD_GTK=OFF -DRC_BUILD_CORE=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          cmake --build build --target rc-agent
+          lipo -info build/frontends/agent/rc-agent
+
+      - name: Đóng gói
+        run: |
+          VER="${GITHUB_REF_NAME}"
+          PKG="rc-agent-${VER}-macos-universal"
+          mkdir -p "dist/${PKG}"
+          cp build/frontends/agent/rc-agent "dist/${PKG}/"
+          tar -C dist -czf "${PKG}.tar.gz" "${PKG}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: rc-agent-*-macos-universal.tar.gz
+
+  release:
+    name: Tạo GitHub Release
+    needs: [linux, macos-agent]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: "*.tar.gz"
+          generate_release_notes: true
+          body: |
+            ## Cài đặt nhanh
+
+            **Ubuntu 24.04+ (desktop):** tải `rigcontrol-*-linux-x86_64.tar.gz`, giải nén, cài
+            runtime rồi chạy từ thư mục giải nén (app tìm `server/rc-server` cạnh binary):
+
+            ```bash
+            sudo apt install libgtk-4-1 libepoxy0 libavcodec-extra libasound2t64 adb
+            tar xzf rigcontrol-*-linux-x86_64.tar.gz && cd rigcontrol-*/
+            ./rigcontrol
+            ```
+
+            **macOS (máy cắm thiết bị, chạy agent):** tải `rc-agent-*-macos-universal.tar.gz`,
+            giải nén và chạy `./rc-agent` (cần `adb` trong PATH — `brew install --cask
+            android-platform-tools`).
+
+            Hướng dẫn đầy đủ trong README của repo.
