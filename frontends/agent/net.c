@@ -81,8 +81,9 @@ int tcp_listen_addr(const char *ip, int port) {
 }
 
 /* Bơm 2 chiều tới khi một đầu đóng/lỗi. Blocking read sau POLLIN + write_full — backpressure
- * tự nhiên, mỗi kết nối một thread riêng nên không chặn ai khác. */
-static void pump(int a, int b) {
+ * tự nhiên, mỗi kết nối một thread riêng nên không chặn ai khác. Đếm byte mỗi chiều để log
+ * (a2b = đọc từ a ghi sang b, b2a ngược lại). */
+static void pump(int a, int b, uint64_t *a2b, uint64_t *b2a) {
     uint8_t buf[65536];
     struct pollfd p[2] = {{.fd = a, .events = POLLIN}, {.fd = b, .events = POLLIN}};
     for (;;) {
@@ -94,7 +95,11 @@ static void pump(int a, int b) {
         for (int i = 0; i < 2 && !done; i++) {
             if (!(p[i].revents & (POLLIN | POLLHUP | POLLERR))) continue;
             ssize_t n = read(p[i].fd, buf, sizeof buf);
-            if (n <= 0 || write_full(i == 0 ? b : a, buf, (size_t)n) < 0) done = 1;
+            if (n <= 0 || write_full(i == 0 ? b : a, buf, (size_t)n) < 0) {
+                done = 1;
+            } else {
+                *(i == 0 ? a2b : b2a) += (uint64_t)n;
+            }
         }
         if (done) break;
     }
@@ -104,11 +109,21 @@ static void pump(int a, int b) {
  * vào pre[] để replay; upstream "xác nhận" khi có dữ liệu trả về hoặc giữ im lặng 300ms
  * (guest chưa listen thì adb đóng trong vài ms). EOF sớm → reconnect + replay, tối đa 10s. */
 static int stream_open_upstream(Conn *c, uint8_t *pre, size_t *pre_len) {
-    const int64_t deadline = now_ms() + 10000;
+    const int64_t t_start = now_ms();
+    const int64_t deadline = t_start + 10000;
+    int tries = 0, conn_fail = 0, early_eof = 0;
     for (;;) {
+        tries++;
         int up = tcp_connect_timeout(c->dst_host, c->dst_port, 3000);
         if (up < 0) {
-            if (g_stop || now_ms() >= deadline) return -1;
+            conn_fail++;
+            if (g_stop || now_ms() >= deadline) {
+                logts("stream :%d ← %s: BỎ CUỘC sau %d lần / %dms — upstream %s:%d không "
+                      "connect được (adb forward chết?)",
+                      c->pub_port, c->peer, tries, (int)(now_ms() - t_start), c->dst_host,
+                      c->dst_port);
+                return -1;
+            }
             sleep_ms(200);
             continue;
         }
@@ -141,8 +156,7 @@ static int stream_open_upstream(Conn *c, uint8_t *pre, size_t *pre_len) {
             } else if (p[1].revents) {
                 uint8_t b[1024];
                 ssize_t n = read(c->client, b, sizeof b);
-                if (n <= 0 || *pre_len + (size_t)n > PRE_CAP ||
-                    write_full(up, b, (size_t)n) < 0) {
+                if (n <= 0 || *pre_len + (size_t)n > PRE_CAP || write_full(up, b, (size_t)n) < 0) {
                     verdict = -2; /* client đóng / quá nhiều dữ liệu để replay */
                 } else {
                     memcpy(pre + *pre_len, b, (size_t)n);
@@ -150,24 +164,46 @@ static int stream_open_upstream(Conn *c, uint8_t *pre, size_t *pre_len) {
                 }
             }
         }
-        if (verdict == 1) return up;
+        if (verdict == 1) {
+            logts("stream :%d ← %s: upstream %s:%d thông (lần %d, %dms; guest chưa listen %d "
+                  "lần, connect fail %d lần)",
+                  c->pub_port, c->peer, c->dst_host, c->dst_port, tries, (int)(now_ms() - t_start),
+                  early_eof, conn_fail);
+            return up;
+        }
         close(up);
-        if (verdict == -2 || g_stop || now_ms() >= deadline) return -1;
+        if (verdict == -1) early_eof++;
+        if (verdict == -2 || g_stop || now_ms() >= deadline) {
+            logts("stream :%d ← %s: BỎ CUỘC sau %d lần / %dms (%s)", c->pub_port, c->peer, tries,
+                  (int)(now_ms() - t_start),
+                  verdict == -2 ? "client đóng trước / dữ liệu replay quá lớn"
+                                : "hết 10s — guest không listen (server chưa deploy tới?)");
+            return -1;
+        }
         sleep_ms(150);
     }
 }
 
 void *conn_thread(void *arg) {
     Conn *c = arg;
+    const int64_t t0 = now_ms();
+    logts("relay :%d ← %s → %s:%d (%s) mở", c->pub_port, c->peer, c->dst_host, c->dst_port,
+          c->group ? "stream" : "adb");
     int up;
     if (!c->group) {
         up = tcp_connect_timeout(c->dst_host, c->dst_port, 3000);
+        if (up < 0)
+            logts("relay :%d ← %s: upstream %s:%d không connect được", c->pub_port, c->peer,
+                  c->dst_host, c->dst_port);
     } else {
         pthread_mutex_lock(&c->group->mu);
         while (c->group->busy)
             pthread_cond_wait(&c->group->cv, &c->group->mu);
         c->group->busy = 1;
         pthread_mutex_unlock(&c->group->mu);
+        if (now_ms() - t0 > 50)
+            logts("stream :%d ← %s: đã chờ %dms cho kết nối trước cùng cổng xong", c->pub_port,
+                  c->peer, (int)(now_ms() - t0));
 
         uint8_t pre[PRE_CAP];
         size_t pre_len = 0;
@@ -179,8 +215,12 @@ void *conn_thread(void *arg) {
         pthread_mutex_unlock(&c->group->mu);
     }
     if (up >= 0) {
-        pump(c->client, up);
+        uint64_t c2u = 0, u2c = 0;
+        pump(c->client, up, &c2u, &u2c);
         close(up);
+        logts("relay :%d ← %s đóng sau %ds (client→máy %lluKB, máy→client %lluKB)", c->pub_port,
+              c->peer, (int)((now_ms() - t0) / 1000), (unsigned long long)(c2u / 1024),
+              (unsigned long long)(u2c / 1024));
     }
     close(c->client);
     free(c);

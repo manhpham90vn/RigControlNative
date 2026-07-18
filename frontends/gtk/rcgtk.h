@@ -100,6 +100,9 @@ struct App {
     /* Thiết bị do rc-agent expose: khoá "<ip>:<adb_port>" (== serial adb) → AgentDev*.
      * chooser tra để gắn nhãn "(agent)"; session tra để cấp cổng stream theo thiết bị. */
     GHashTable *agent_devs;
+    /* Host đã dò cổng discovery (tự động hoặc quét tay) — mỗi host chỉ dò một lần mỗi lần chạy
+     * app, tránh probe lặp mỗi lần làm mới danh sách. Set: khoá = ip, value không dùng. */
+    GHashTable *probed_hosts;
 };
 
 /* render.c */

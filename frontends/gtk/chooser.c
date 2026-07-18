@@ -26,7 +26,9 @@ typedef struct {
 } DevInfo;
 
 /* Serial dạng "ip:port" = thiết bị wireless (adb connect qua mạng). */
-static gboolean dev_is_wireless(const char *serial) { return strchr(serial, ':') != NULL; }
+static gboolean dev_is_wireless(const char *serial) {
+    return strchr(serial, ':') != NULL;
+}
 
 /* Nhãn cách thiết bị đấu nối. Thiết bị qua rc-agent (tra registry) mang hậu tố "(agent)". Đường
  * stream thực tế (LAN trực tiếp hay fallback adb tunnel) chỉ biết sau khi kết nối — hiện trên
@@ -68,6 +70,8 @@ static GPtrArray *list_adb_devices(void) {
     return arr;
 }
 
+static void auto_probe_agents(App *app, GtkListBox *list, GPtrArray *devs);
+
 static void populate_devices(App *app, GtkListBox *list) {
     GtkWidget *child;
     while ((child = gtk_widget_get_first_child(GTK_WIDGET(list))))
@@ -99,7 +103,77 @@ static void populate_devices(App *app, GtkListBox *list) {
         g_object_set_data_full(G_OBJECT(row), "serial", g_strdup(d->serial), g_free);
         gtk_list_box_append(list, row);
     }
+    auto_probe_agents(app, list, devs);
     g_ptr_array_free(devs, TRUE);
+}
+
+/* ---------- Tự dò rc-agent cho thiết bị wireless lạ ----------
+ *
+ * Thiết bị wireless không có trong registry agent có thể là máy do rc-agent expose mà lần chạy
+ * app này chưa quét (adb connect thẳng, hoặc còn dính trong `adb devices` từ trước). Khi đó
+ * nhánh LAN trực tiếp giả định connect == listen sẽ trúng nhầm cổng relay của agent (lệch slot)
+ * và chết ở bước device_meta. Dò cổng discovery trên host đó ở thread nền; đúng là agent thì
+ * đăng ký mapping y như quét tay — phiên mở sau sẽ đi đúng dải stream_base + k. */
+
+typedef struct {
+    App *app;
+    GtkListBox *list; /* ref — refresh nhãn "(agent)" khi tìm thấy */
+    char *host;
+    GPtrArray *devs; /* AgentDev* tìm được; NULL = không phải agent */
+} AutoProbe;
+
+static gboolean auto_probe_done(gpointer data) {
+    AutoProbe *ctx = data;
+    if (ctx->devs) {
+        for (guint i = 0; i < ctx->devs->len; i++) {
+            AgentDev *ad = ctx->devs->pdata[i];
+            g_hash_table_replace(ctx->app->agent_devs, g_strdup(ad->serial),
+                                 g_memdup2(ad, sizeof *ad));
+        }
+        g_message("tự phát hiện rc-agent tại %s — đăng ký %u thiết bị (map đúng dải stream)",
+                  ctx->host, ctx->devs->len);
+        populate_devices(ctx->app, ctx->list); /* cập nhật nhãn "(agent)" */
+        g_ptr_array_free(ctx->devs, TRUE);
+    }
+    g_object_unref(ctx->list);
+    g_free(ctx->host);
+    g_free(ctx);
+    return G_SOURCE_REMOVE;
+}
+
+static gpointer auto_probe_thread(gpointer data) {
+    AutoProbe *ctx = data;
+    GError *err = NULL;
+    if (!agent_scan(ctx->host, DEFAULT_DISCOVERY_PORT, &ctx->devs, &err)) {
+        g_clear_error(&err); /* không trả lời / không phải agent — im lặng, đây chỉ là probe */
+        ctx->devs = NULL;
+    }
+    g_idle_add(auto_probe_done, ctx);
+    return NULL;
+}
+
+/* Mỗi host wireless lạ chỉ dò MỘT lần mỗi lần chạy app (probed_hosts) — kể cả khi không phải
+ * agent, khỏi probe lại mỗi lần bấm "Làm mới". Chạy trên UI thread; việc nặng đẩy sang thread. */
+static void auto_probe_agents(App *app, GtkListBox *list, GPtrArray *devs) {
+    for (guint i = 0; i < devs->len; i++) {
+        DevInfo *d = devs->pdata[i];
+        if (!dev_is_wireless(d->serial)) continue;
+        if (g_hash_table_contains(app->agent_devs, d->serial)) continue;
+        char host[128];
+        const char *colon = strrchr(d->serial, ':');
+        size_t n = (size_t)(colon - d->serial);
+        if (n == 0 || n >= sizeof host) continue;
+        memcpy(host, d->serial, n);
+        host[n] = '\0';
+        if (g_hash_table_contains(app->probed_hosts, host)) continue;
+        g_hash_table_add(app->probed_hosts, g_strdup(host));
+        AutoProbe *ctx = g_new0(AutoProbe, 1);
+        ctx->app = app;
+        ctx->list = g_object_ref(list);
+        ctx->host = g_strdup(host);
+        g_message("%s: dò rc-agent tại %s:%d (nền)…", d->serial, host, DEFAULT_DISCOVERY_PORT);
+        g_thread_unref(g_thread_new("agent-probe", auto_probe_thread, ctx));
+    }
 }
 
 /* ---------- Callback ---------- */
@@ -124,6 +198,9 @@ static void on_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer user)
      * retry LAN rồi mới fallback). */
     AgentDev *ad = g_hash_table_lookup(app->agent_devs, serial);
     if (ad) {
+        g_message("%s: thiết bị qua agent %s (adb cổng %d, stream_base %d)%s", serial, ad->host,
+                  ad->adb_port, ad->stream_base,
+                  ad->stream_base > 0 ? "" : " — agent không relay stream, đi adb tunnel");
         session_new(app, serial, ad->stream_base > 0 ? ad->host : NULL);
         return;
     }
@@ -196,8 +273,7 @@ static gboolean agent_scan_done(gpointer data) {
     AgentScan *ctx = data;
     for (guint i = 0; i < ctx->ok_devs->len; i++) {
         AgentDev *ad = ctx->ok_devs->pdata[i];
-        g_hash_table_replace(ctx->app->agent_devs, g_strdup(ad->serial),
-                             g_memdup2(ad, sizeof *ad));
+        g_hash_table_replace(ctx->app->agent_devs, g_strdup(ad->serial), g_memdup2(ad, sizeof *ad));
     }
     gtk_label_set_text(ctx->status, ctx->msg);
     gtk_widget_set_sensitive(ctx->entry, TRUE);
@@ -238,11 +314,11 @@ static gpointer agent_scan_thread(gpointer data) {
     guint total = devs->len, ok = ctx->ok_devs->len;
     g_ptr_array_free(devs, TRUE);
 
-    ctx->msg = ok ? g_strdup_printf("Agent %s: nối được %u/%u thiết bị — bấm để mở.", ctx->ip, ok,
-                                    total)
-                  : g_strdup_printf("Agent %s: %u thiết bị nhưng không nối được máy nào "
-                                    "(kiểm tra adb / mạng).",
-                                    ctx->ip, total);
+    ctx->msg =
+        ok ? g_strdup_printf("Agent %s: nối được %u/%u thiết bị — bấm để mở.", ctx->ip, ok, total)
+           : g_strdup_printf("Agent %s: %u thiết bị nhưng không nối được máy nào "
+                             "(kiểm tra adb / mạng).",
+                             ctx->ip, total);
     g_idle_add(agent_scan_done, ctx);
     return NULL;
 }
@@ -258,6 +334,8 @@ static void agent_scan_start(App *app, GtkWidget *entry) {
         port = atoi(colon + 1);
         if (port <= 0) port = DEFAULT_DISCOVERY_PORT;
     }
+
+    g_hash_table_add(app->probed_hosts, g_strdup(ip)); /* quét tay = đã dò, auto-probe bỏ qua */
 
     GtkWidget *btn = g_object_get_data(G_OBJECT(entry), "btn");
     AgentScan *ctx = g_new0(AgentScan, 1);
@@ -369,10 +447,10 @@ void chooser_show(App *app) {
     GtkWidget *agent_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     GtkWidget *entry = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(entry), "100.x.y.z (IP máy agent)");
-    gtk_widget_set_tooltip_text(entry,
-                                "IP máy đang chạy rc-agent (LAN hoặc Tailscale). App hỏi cổng "
-                                "discovery 8888 rồi liệt kê mọi thiết bị máy đó có; thêm \":cổng\" "
-                                "nếu agent chạy cổng khác. Bấm vào thiết bị trong danh sách để mở.");
+    gtk_widget_set_tooltip_text(
+        entry, "IP máy đang chạy rc-agent (LAN hoặc Tailscale). App hỏi cổng "
+               "discovery 8888 rồi liệt kê mọi thiết bị máy đó có; thêm \":cổng\" "
+               "nếu agent chạy cổng khác. Bấm vào thiết bị trong danh sách để mở.");
     gtk_widget_set_hexpand(entry, TRUE);
     g_signal_connect(entry, "activate", G_CALLBACK(on_agent_activate), app);
     gtk_box_append(GTK_BOX(agent_row), entry);

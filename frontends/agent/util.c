@@ -7,6 +7,8 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <spawn.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -22,7 +24,25 @@ int64_t now_ms(void) {
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-void sleep_ms(int ms) { usleep((useconds_t)ms * 1000); }
+void sleep_ms(int ms) {
+    usleep((useconds_t)ms * 1000);
+}
+
+/* Log một dòng kèm giờ HH:MM:SS.mmm. Gom vsnprintf rồi printf MỘT lần để các thread relay
+ * không xé dòng của nhau (stdout line-buffered — main.c đã setvbuf _IOLBF). */
+void logts(const char *fmt, ...) {
+    char msg[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    struct tm tm;
+    localtime_r(&ts.tv_sec, &tm);
+    printf("[%02d:%02d:%02d.%03d] %s\n", tm.tm_hour, tm.tm_min, tm.tm_sec,
+           (int)(ts.tv_nsec / 1000000), msg);
+}
 
 /* Chạy đồng bộ; out != NULL thì capture stdout (stderr đi thẳng ra terminal). Quá hạn thì
  * SIGKILL — `adb connect` tới đích chết treo theo TCP SYN retry hàng phút nếu không chặn.

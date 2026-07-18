@@ -6,6 +6,7 @@
  */
 #include "agent.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -104,13 +105,19 @@ int main(int argc, char **argv) {
         if (r <= 0) continue;
         for (int i = 0; i < nls; i++) {
             if (!(pfds[i].revents & POLLIN)) continue;
-            int cl = accept(pfds[i].fd, NULL, NULL);
+            struct sockaddr_in peer_addr;
+            socklen_t peer_len = sizeof peer_addr;
+            int cl = accept(pfds[i].fd, (struct sockaddr *)&peer_addr, &peer_len);
             if (cl < 0) continue;
+            char peer[46] = "?";
+            if (peer_len >= sizeof peer_addr && peer_addr.sin_family == AF_INET)
+                inet_ntop(AF_INET, &peer_addr.sin_addr, peer, sizeof peer);
             int one = 1;
             setsockopt(cl, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
             /* g_ls[i] với i < nls là bất biến (mảng chỉ lớn thêm) → đọc không cần lock. */
             Listener *L = &g_ls[i];
             if (L->is_discovery) {
+                logts("discovery: %s hỏi danh sách thiết bị", peer);
                 discovery_write(cl);
                 close(cl);
                 continue;
@@ -123,6 +130,8 @@ int main(int argc, char **argv) {
             c->client = cl;
             c->dst_port = L->dst_port;
             c->group = L->group;
+            c->pub_port = L->pub_port;
+            snprintf(c->peer, sizeof c->peer, "%s", peer);
             snprintf(c->dst_host, sizeof c->dst_host, "%s", L->dst_host);
             pthread_t th;
             if (pthread_create(&th, NULL, conn_thread, c) == 0)
