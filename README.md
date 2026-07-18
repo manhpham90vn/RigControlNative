@@ -32,10 +32,13 @@ Yêu cầu: **Ubuntu 24.04+** (GTK4 ≥ 4.10), `adb`, thiết bị Android 7+ đ
 (audio cần Android 11+, control đã kiểm chứng trên Android 14).
 
 ```bash
-sudo apt install libgtk-4-1 libepoxy0 libavcodec-extra libasound2t64 adb
+sudo apt install libgtk-4-1 libepoxy0 libasound2t64 adb
 tar xzf rigcontrol-v*-linux-x86_64.tar.gz && cd rigcontrol-v*/
 ./rigcontrol          # chạy từ thư mục giải nén — app tìm server/rc-server cạnh binary
 ```
+
+FFmpeg đã bundle sẵn trong `lib/` của tar (không phụ thuộc FFmpeg hệ thống — soname
+libavcodec đổi theo từng đời distro nên không dùng lib distro được).
 
 > Distro khác / phiên bản thư viện lệch → [build từ source](#build-từ-source) (~5 phút).
 
