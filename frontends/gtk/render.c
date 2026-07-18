@@ -198,6 +198,8 @@ static gboolean on_render(GtkGLArea *area, GdkGLContext *ctx, gpointer user) {
     int vw = st->vw, vh = st->vh;
     int nv12 = (st->pixfmt == RC_PIX_NV12);
     int full_range = st->full_range, bt709 = st->bt709;
+    int uploaded = 0;
+    int64_t recv_ms = 0, pts_us = 0;
     if (st->have_pending && vw > 0 && vh > 0) {
         upload_plane(st, 0, 0, st->plane[0], st->pstride[0], vw, vh, GL_R8, GL_RED);
         if (nv12) {
@@ -208,8 +210,27 @@ static gboolean on_render(GtkGLArea *area, GdkGLContext *ctx, gpointer user) {
             upload_plane(st, 2, 2, st->plane[2], st->pstride[2], vw / 2, vh / 2, GL_R8, GL_RED);
         }
         st->have_pending = 0;
+        uploaded = 1;
+        recv_ms = st->pend_recv_ms;
+        pts_us = st->pend_pts_us;
     }
     g_mutex_unlock(&st->lock);
+
+    /* Cộng dồn mẫu đo trễ cho frame vừa upload (fps_tick đọc + reset mỗi giây, cùng UI thread).
+     * Chỉ frame thật sự lên hình mới được tính — frame bị coalesce đè không có mẫu. */
+    if (uploaded) {
+        int64_t now_us = g_get_monotonic_time();
+        int64_t pipe = now_us / 1000 - recv_ms;
+        if (pipe >= 0 && pipe < 10000) {
+            st->lat_sum_ms += pipe;
+            st->lat_n++;
+            if (pts_us > 0) {
+                int64_t rel = now_us - pts_us;
+                if (rel < st->lag_base_us) st->lag_base_us = rel;
+                st->lag_sum_ms += (rel - st->lag_base_us) / 1000;
+            }
+        }
+    }
 
     if (st->tex_w[0] == 0) return TRUE; /* chưa có frame nào */
 
@@ -319,6 +340,8 @@ void render_on_frame(const rc_frame *f, void *user) {
         copy_plane(st, 2, f->data[2], f->linesize[2], f->width / 2, f->height / 2);
     }
     st->have_pending = 1;
+    st->pend_recv_ms = f->recv_ms;
+    st->pend_pts_us = f->pts_us;
     g_mutex_unlock(&st->lock);
 
     atomic_fetch_add(&st->frame_count, 1); /* đo FPS (session.c hiển thị) */

@@ -73,11 +73,23 @@ static gboolean fps_tick(gpointer user) {
     if (!atomic_load(&st->alive)) return G_SOURCE_REMOVE;
     const char *dec = st->client ? rc_client_get_decoder_desc(st->client) : NULL;
     int fps = atomic_exchange(&st->frame_count, 0);
+
+    /* Trung bình các mẫu đo trễ trong giây vừa rồi (render.c cộng dồn, cùng UI thread).
+     * Màn hình tĩnh → không frame → không mẫu → giữ trống thay vì hiện số cũ. */
+    char lat[48] = "";
+    if (st->lat_n > 0) {
+        g_snprintf(lat, sizeof lat, " · pipe %dms · lag +%dms", (int)(st->lat_sum_ms / st->lat_n),
+                   (int)(st->lag_sum_ms / st->lat_n));
+        st->lat_sum_ms = 0;
+        st->lag_sum_ms = 0;
+        st->lat_n = 0;
+    }
+
     char buf[256];
     if (dec)
-        g_snprintf(buf, sizeof buf, "%s · %d FPS · %s", st->title_base, fps, dec);
+        g_snprintf(buf, sizeof buf, "%s · %d FPS%s · %s", st->title_base, fps, lat, dec);
     else
-        g_snprintf(buf, sizeof buf, "%s · %d FPS", st->title_base, fps);
+        g_snprintf(buf, sizeof buf, "%s · %d FPS%s", st->title_base, fps, lat);
     gtk_window_set_title(GTK_WINDOW(st->win), buf);
     return G_SOURCE_CONTINUE;
 }
@@ -162,6 +174,7 @@ void session_new(App *app, const char *serial, const char *tcp_addr) {
     s->serial_owned = serial ? g_strdup(serial) : NULL;
     s->cfg.serial = s->serial_owned;
     s->stream_k = -1;
+    s->lag_base_us = G_MAXINT64; /* baseline lag: min(now − pts) cập nhật dần từ frame đầu */
     s->tcp_owned = tcp_addr ? g_strdup(tcp_addr) : NULL;
     if (s->tcp_owned) {
         s->cfg.transport = RC_TRANSPORT_TCP;
