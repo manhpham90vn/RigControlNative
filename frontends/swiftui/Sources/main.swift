@@ -10,6 +10,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var chooserWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // App mở từ Finder chỉ có PATH mặc định của launchd (không có Homebrew/Android SDK),
+        // mà libcore spawn "adb" bằng posix_spawnp theo PATH → prepend thư mục adb tìm được.
+        if AdbTools.adbPath.hasPrefix("/") {
+            let dir = (AdbTools.adbPath as NSString).deletingLastPathComponent
+            let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
+            if !path.split(separator: ":").contains(Substring(dir)) {
+                setenv("PATH", "\(dir):\(path)", 1)
+            }
+        }
         setupMenu()
         if EnvConfig.hasDirectTarget {
             SessionManager.shared.openDirect(base: EnvConfig.base())

@@ -230,8 +230,13 @@ jobs:
 
             **macOS app (Apple Silicon):** tải `RigControlNative-*-macos-arm64.zip`, giải nén
             và mở `RigControlNative.app` (FFmpeg + rc-server đã bundle sẵn — chỉ cần `adb` trong
-            PATH: `brew install --cask android-platform-tools`). App chưa ký Developer ID nên lần
-            đầu mở phải chuột phải → *Open* (hoặc *Cài đặt › Quyền riêng tư & Bảo mật › Mở kèm*).
+            PATH: `brew install --cask android-platform-tools`). App chưa ký Developer ID nên
+            Gatekeeper báo "bị hỏng" khi mở file tải từ trình duyệt — xoá cờ quarantine rồi mở
+            như bình thường:
+
+            ```bash
+            xattr -dr com.apple.quarantine RigControlNative.app
+            ```
 
             **macOS (máy cắm thiết bị, chạy agent):** tải `rc-agent-*-macos-universal.tar.gz`,
             giải nén và chạy `./rc-agent` (cần `adb` trong PATH).

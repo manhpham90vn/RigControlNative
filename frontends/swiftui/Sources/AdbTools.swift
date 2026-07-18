@@ -13,7 +13,8 @@ struct AdbDevice: Identifiable, Hashable {
 enum AdbTools {
     /// Đường dẫn adb: ưu tiên PATH; fallback vị trí Homebrew hay gặp.
     static let adbPath: String = {
-        for p in ["/opt/homebrew/bin/adb", "/usr/local/bin/adb", "/usr/bin/adb"]
+        for p in ["/opt/homebrew/bin/adb", "/usr/local/bin/adb", "/usr/bin/adb",
+                  NSHomeDirectory() + "/Library/Android/sdk/platform-tools/adb"]
         where FileManager.default.isExecutableFile(atPath: p) { return p }
         return "adb" // để launch dựa vào PATH (env qua /usr/bin/env)
     }()
