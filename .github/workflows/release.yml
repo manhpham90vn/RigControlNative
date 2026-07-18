@@ -210,7 +210,10 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: "*.tar.gz"
+          # App macOS đóng gói .zip (ditto), Linux/agent là .tar.gz → gom cả hai.
+          files: |
+            *.tar.gz
+            *.zip
           generate_release_notes: true
           body: |
             ## Cài đặt nhanh
