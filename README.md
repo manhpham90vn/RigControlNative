@@ -250,6 +250,7 @@ capture/encode video + audio; libcore demux/decode/C API; GTK render; control ch
 phím/nút thiết bị; audio Opus→ALSA; LAN trực tiếp có token + hw decode (NVDEC/VAAPI, fallback
 sw); rc-agent discovery/relay đa thiết bị + tự phát hiện; đo trễ pipe/lag trên tiêu đề.
 
+```
 typedef struct {
     int width, height;
     int format;                // vd NV12/I420

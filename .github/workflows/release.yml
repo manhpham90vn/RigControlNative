@@ -134,9 +134,73 @@ jobs:
           name: macos-universal
           path: rc-agent-*-macos-universal.tar.gz
 
+  macos-app:
+    name: Đóng gói app macOS (SwiftUI, self-contained)
+    runs-on: macos-14 # runner arm64 → app arm64 (Apple Silicon); universal cần build 2 kiến trúc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cài công cụ build
+        run: brew install cmake nasm dav1d
+
+      # rc-server (dex) được bundle vào .app để app double-click tự deploy được server.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      # Như job Linux: KHÔNG dùng FFmpeg full của Homebrew (kéo cả closure x264/x265/openssl...
+      # ~12 dylib). Build FFmpeg tối giản chỉ gồm decoder app cần rồi bundle vào .app (~4 dylib,
+      # av1 software qua dav1d). Mac chưa có hwaccel (VideoToolbox) → chỉ software decode.
+      - name: Build FFmpeg tối giản để bundle
+        run: |
+          set -o pipefail
+          FFVER=8.0
+          FFPREFIX="${GITHUB_WORKSPACE}/ffprefix"
+          curl -sLO "https://ffmpeg.org/releases/ffmpeg-${FFVER}.tar.xz"
+          tar xf "ffmpeg-${FFVER}.tar.xz"
+          cd "ffmpeg-${FFVER}"
+          PKG_CONFIG_PATH="$(brew --prefix dav1d)/lib/pkgconfig" ./configure \
+            --prefix="${FFPREFIX}" \
+            --disable-all --disable-autodetect \
+            --enable-shared --disable-static \
+            --enable-avcodec --enable-swresample --enable-pthreads \
+            --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=opus \
+            --enable-decoder=av1 --enable-decoder=libdav1d --enable-libdav1d \
+            2>&1 | tee configure.log
+          # Thiếu dependency thì configure chỉ WARNING rồi lặng lẽ bỏ decoder → chặn ở đây.
+          ! grep "WARNING: Disabled" configure.log
+          make -j"$(sysctl -n hw.ncpu)" install
+
+      - name: Build rc-server (javac + d8)
+        run: make server
+
+      # build-mac.sh nhận FFMPEG_PREFIX (mặc định brew) → link bản tối giản vừa build.
+      - name: Build app SwiftUI
+        run: FFMPEG_PREFIX="${GITHUB_WORKSPACE}/ffprefix" make mac
+
+      # bundle-mac.sh: nhét FFmpeg + rc-server vào .app, relink @rpath, ad-hoc sign.
+      - name: Bundle self-contained + đóng gói
+        run: |
+          VER="${GITHUB_REF_NAME}"
+          PKG="RigControlNative-${VER}-macos-arm64"
+          ./frontends/swiftui/bundle-mac.sh
+          mkdir -p "dist/${PKG}"
+          cp -R build-mac/RigControlNative.app "dist/${PKG}/"
+          cp README.md "dist/${PKG}/"
+          # ditto giữ symlink/quyền/chữ ký của .app (zip thường làm hỏng bundle).
+          ditto -c -k --keepParent "dist/${PKG}" "${PKG}.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-app-arm64
+          path: RigControlNative-*-macos-arm64.zip
+
   release:
     name: Tạo GitHub Release
-    needs: [linux, macos-agent]
+    needs: [linux, macos-agent, macos-app]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -160,8 +224,12 @@ jobs:
             ./rigcontrol
             ```
 
+            **macOS app (Apple Silicon):** tải `RigControlNative-*-macos-arm64.zip`, giải nén
+            và mở `RigControlNative.app` (FFmpeg + rc-server đã bundle sẵn — chỉ cần `adb` trong
+            PATH: `brew install --cask android-platform-tools`). App chưa ký Developer ID nên lần
+            đầu mở phải chuột phải → *Open* (hoặc *Cài đặt › Quyền riêng tư & Bảo mật › Mở kèm*).
+
             **macOS (máy cắm thiết bị, chạy agent):** tải `rc-agent-*-macos-universal.tar.gz`,
-            giải nén và chạy `./rc-agent` (cần `adb` trong PATH — `brew install --cask
-            android-platform-tools`).
+            giải nén và chạy `./rc-agent` (cần `adb` trong PATH).
 
             Hướng dẫn đầy đủ trong README của repo.

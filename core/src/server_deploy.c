@@ -9,14 +9,19 @@
 #include "rc_internal.h"
 
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 
 #define ACCEPT_TIMEOUT_MS 15000
 #define WAIT_SLICE_MS 100 /* lát chờ để kiểm tra abort / server chết giữa chừng */
@@ -25,10 +30,47 @@
  * timeout chỉ còn bắt trường hợp treo im lặng. */
 #define META_TIMEOUT_MS 12000
 
-/* Đường dẫn jar server phía desktop: ưu tiên env RC_SERVER_PATH, mặc định "server/rc-server". */
+/* Thư mục chứa binary đang chạy (để tìm rc-server đóng gói cạnh app). Trả 0 nếu không xác
+ * định được — caller tự fallback đường dẫn tương đối thư mục chạy. */
+static int exe_dir(char *buf, size_t sz) {
+    char real[PATH_MAX];
+#ifdef __APPLE__
+    char path[PATH_MAX];
+    uint32_t n = sizeof(path);
+    if (_NSGetExecutablePath(path, &n) != 0 || !realpath(path, real)) return 0;
+#else
+    ssize_t len = readlink("/proc/self/exe", real, sizeof(real) - 1);
+    if (len <= 0) return 0;
+    real[len] = '\0';
+#endif
+    char *slash = strrchr(real, '/');
+    if (!slash) return 0;
+    size_t dlen = (size_t)(slash - real);
+    if (dlen >= sz) return 0;
+    memcpy(buf, real, dlen);
+    buf[dlen] = '\0';
+    return 1;
+}
+
+/* Đường dẫn jar server phía desktop: ưu tiên env RC_SERVER_PATH; kế đó tìm cạnh binary
+ * ("../Resources/rc-server" trong .app macOS, "server/rc-server" trong gói Linux); cuối cùng
+ * fallback "server/rc-server" tương đối thư mục chạy (workflow dev chạy từ gốc repo). */
 static const char *server_local_path(void) {
     const char *env = getenv("RC_SERVER_PATH");
-    return (env && *env) ? env : "server/rc-server";
+    if (env && *env) return env;
+
+    static char buf[PATH_MAX];
+    char dir[PATH_MAX];
+    if (exe_dir(dir, sizeof(dir))) {
+        static const char *const rel[] = {"../Resources/rc-server", "server/rc-server",
+                                          "rc-server"};
+        for (size_t i = 0; i < sizeof(rel) / sizeof(rel[0]); i++) {
+            if ((size_t)snprintf(buf, sizeof(buf), "%s/%s", dir, rel[i]) < sizeof(buf) &&
+                access(buf, R_OK) == 0)
+                return buf;
+        }
+    }
+    return "server/rc-server";
 }
 
 /* Tiến trình `adb shell app_process` đã chết? (server crash/adb rớt → fail-fast thay vì

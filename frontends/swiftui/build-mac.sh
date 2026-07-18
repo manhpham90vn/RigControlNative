@@ -23,7 +23,9 @@ cmake -B "$BUILD" -S "$ROOT" -G "Unix Makefiles" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOS_TARGET" >/dev/null
 cmake --build "$BUILD" --target rccore
 
-FFMPEG_PREFIX="$(brew --prefix ffmpeg)"
+# FFmpeg: mặc định lấy từ Homebrew; workflow release ép FFMPEG_PREFIX trỏ tới bản FFmpeg tối
+# giản tự build (chỉ decoder cần) để bundle vào .app cho gọn — xem .github/workflows/release.yml.
+FFMPEG_PREFIX="${FFMPEG_PREFIX:-$(brew --prefix ffmpeg)}"
 echo "==> FFmpeg: $FFMPEG_PREFIX"
 
 echo "==> [2/4] Biên dịch Swift → executable ($ARCH)"
