@@ -206,7 +206,6 @@ Ba tầng, ranh giới rõ ràng qua **C API** (`core/include/rc/rc_client.h`):
 
 ```
 RigControlNative/
-<<<<<<< HEAD
   CMakeLists.txt                # top-level: build core + gtk frontend
   README.md
   docs/PROTOCOL.md              # đặc tả protocol video + control server↔core (nguồn sự thật)
@@ -237,15 +236,6 @@ RigControlNative/
     winui/                      # phase sau (C++/WinUI 3, SwapChainPanel + D3D11)
   third_party/
     miniaudio/                  # backend audio cross-platform (single-header, vendored)
-=======
-  server/          # rc-server Android (Java thuần, build javac + d8 → dex)
-  core/            # libcore C: client.c, adb.c, net.c, server_deploy.c, demuxer.c,
-                   #            decoder.c, audio.c, control_msg.c
-  frontends/gtk/   # app GTK4 (chooser, session, render GL, input)
-  frontends/agent/ # rc-agent: discovery + relay, C thuần POSIX (Linux/macOS)
-  docs/PROTOCOL.md        # protocol video/audio/control (nguồn sự thật)
-  docs/AGENT_PROTOCOL.md  # protocol discovery + relay của rc-agent
->>>>>>> 42bc9b07321123ecba6dc23a23ca3e7232ddb1f8
 ```
 
 **Điểm nhấn low-latency**: encoder CBR + không B-frame + IDR theo yêu cầu; decoder
@@ -260,7 +250,6 @@ capture/encode video + audio; libcore demux/decode/C API; GTK render; control ch
 phím/nút thiết bị; audio Opus→ALSA; LAN trực tiếp có token + hw decode (NVDEC/VAAPI, fallback
 sw); rc-agent discovery/relay đa thiết bị + tự phát hiện; đo trễ pipe/lag trên tiêu đề.
 
-<<<<<<< HEAD
 typedef struct {
     int width, height;
     int format;                // vd NV12/I420
@@ -505,10 +494,6 @@ biên dịch toàn bộ `Sources/*.swift` với `swiftc` (module map `bridge/` p
 
 Còn lại: zero-copy dmabuf (VAAPI → EGLImage), hardware decode VideoToolbox (mac), port Windows
 (WinUI 3).
-=======
-Còn lại: zero-copy GPU (dmabuf/CUDA-GL interop), gõ tiếng Việt (cần UHID/IME injection),
-port Windows (WinUI 3) và macOS (SwiftUI) dùng chung libcore — Phase 7.
->>>>>>> 42bc9b07321123ecba6dc23a23ca3e7232ddb1f8
 
 ## License
 

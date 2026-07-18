@@ -1,80 +1,12 @@
-<<<<<<< HEAD
-=======
 # Release: push tag `v*` (vd `git tag v0.1.0 && git push origin v0.1.0`) → build + đóng gói
 # + tạo GitHub Release kèm artifact:
 #   rigcontrol-<ver>-linux-x86_64.tar.gz   app GTK + rc-agent + rc-server (build Ubuntu 24.04)
 #   rc-agent-<ver>-macos-universal.tar.gz  rc-agent universal (arm64 + x86_64)
->>>>>>> 42bc9b07321123ecba6dc23a23ca3e7232ddb1f8
 name: Release
 
 on:
   push:
     tags: ["v*"]
-<<<<<<< HEAD
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
-jobs:
-  # ---- Android rc-server (đính kèm release, dùng chung cho mọi nền tảng) ----
-  server:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-      - uses: android-actions/setup-android@v3
-      - run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
-      - run: ./server/build.sh
-      - name: Đính kèm rc-server
-        uses: softprops/action-gh-release@v2
-        with:
-          files: server/rc-server
-
-  # ---- macOS: RigControlNative.app ----
-  macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: brew install ffmpeg cmake
-      - name: Build app
-        run: make mac
-      - name: Đóng gói .app
-        run: ditto -c -k --keepParent build-mac/RigControlNative.app RigControlNative-macos-arm64.zip
-      - name: Đính kèm zip
-        uses: softprops/action-gh-release@v2
-        with:
-          files: RigControlNative-macos-arm64.zip
-
-  # ---- Linux: rigcontrol (GTK) + rc-agent ----
-  linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Cài dependency
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build pkg-config \
-            libavcodec-dev libavutil-dev libswresample-dev \
-            libgtk-4-dev libepoxy-dev
-      - name: Build GTK + agent
-        run: |
-          make gtk
-          make agent
-      - name: Đóng gói
-        run: |
-          mkdir -p dist
-          cp build/frontends/gtk/rigcontrol dist/
-          cp build/frontends/agent/rc-agent dist/
-          tar czf RigControlNative-linux-x86_64.tar.gz -C dist .
-      - name: Đính kèm tarball
-        uses: softprops/action-gh-release@v2
-        with:
-          files: RigControlNative-linux-x86_64.tar.gz
-=======
 
 permissions:
   contents: write # tạo release + upload asset
@@ -233,4 +165,3 @@ jobs:
             android-platform-tools`).
 
             Hướng dẫn đầy đủ trong README của repo.
->>>>>>> 42bc9b07321123ecba6dc23a23ca3e7232ddb1f8
