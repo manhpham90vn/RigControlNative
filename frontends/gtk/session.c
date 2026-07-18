@@ -73,11 +73,23 @@ static gboolean fps_tick(gpointer user) {
     if (!atomic_load(&st->alive)) return G_SOURCE_REMOVE;
     const char *dec = st->client ? rc_client_get_decoder_desc(st->client) : NULL;
     int fps = atomic_exchange(&st->frame_count, 0);
+
+    /* Trung bình các mẫu đo trễ trong giây vừa rồi (render.c cộng dồn, cùng UI thread).
+     * Màn hình tĩnh → không frame → không mẫu → giữ trống thay vì hiện số cũ. */
+    char lat[48] = "";
+    if (st->lat_n > 0) {
+        g_snprintf(lat, sizeof lat, " · pipe %dms · lag +%dms", (int)(st->lat_sum_ms / st->lat_n),
+                   (int)(st->lag_sum_ms / st->lat_n));
+        st->lat_sum_ms = 0;
+        st->lag_sum_ms = 0;
+        st->lat_n = 0;
+    }
+
     char buf[256];
     if (dec)
-        g_snprintf(buf, sizeof buf, "%s · %d FPS · %s", st->title_base, fps, dec);
+        g_snprintf(buf, sizeof buf, "%s · %d FPS%s · %s", st->title_base, fps, lat, dec);
     else
-        g_snprintf(buf, sizeof buf, "%s · %d FPS", st->title_base, fps);
+        g_snprintf(buf, sizeof buf, "%s · %d FPS%s", st->title_base, fps, lat);
     gtk_window_set_title(GTK_WINDOW(st->win), buf);
     return G_SOURCE_CONTINUE;
 }
@@ -92,8 +104,8 @@ static gboolean title_tick(gpointer user) {
     }
     const char *t = st->client ? rc_client_get_transport_desc(st->client) : NULL;
     if (!t) return G_SOURCE_CONTINUE;
-    const char *tag = st->serial_owned ? st->serial_owned
-                                       : (st->tcp_owned ? st->tcp_owned : "default");
+    const char *tag =
+        st->serial_owned ? st->serial_owned : (st->tcp_owned ? st->tcp_owned : "default");
     g_snprintf(st->title_base, sizeof st->title_base, "RigControlNative — %s (%s)", tag, t);
     gtk_window_set_title(GTK_WINDOW(st->win), st->title_base); /* fps_tick sẽ ghép thêm FPS */
     st->title_timer = 0;
@@ -162,6 +174,7 @@ void session_new(App *app, const char *serial, const char *tcp_addr) {
     s->serial_owned = serial ? g_strdup(serial) : NULL;
     s->cfg.serial = s->serial_owned;
     s->stream_k = -1;
+    s->lag_base_us = G_MAXINT64; /* baseline lag: min(now − pts) cập nhật dần từ frame đầu */
     s->tcp_owned = tcp_addr ? g_strdup(tcp_addr) : NULL;
     if (s->tcp_owned) {
         s->cfg.transport = RC_TRANSPORT_TCP;
@@ -170,6 +183,8 @@ void session_new(App *app, const char *serial, const char *tcp_addr) {
             /* Địa chỉ kèm port sẵn (env RC_TCP_ADDR) → tôn trọng; connect == listen
              * (tcp_device_port = 0). */
             s->cfg.tcp_addr = s->tcp_owned;
+            g_message("phiên %s: dùng địa chỉ TCP cho sẵn %s (env RC_TCP_ADDR)",
+                      serial ? serial : "?", s->cfg.tcp_addr);
         } else if (ad && ad->stream_base > 0) {
             /* Thiết bị qua rc-agent: cổng public = stream_base + k (client connect tới máy
              * agent), server listen RC_LAN_BASE_PORT + k TRONG thiết bị; agent forward giữa hai
@@ -182,8 +197,13 @@ void session_new(App *app, const char *serial, const char *tcp_addr) {
                 s->tcp_owned = withport;
                 s->cfg.tcp_addr = s->tcp_owned;
                 s->cfg.tcp_device_port = RC_LAN_BASE_PORT + k;
+                g_message("phiên %s: thử LAN trực tiếp qua agent — connect %s, server listen %d "
+                          "trong thiết bị (slot k=%d)",
+                          serial ? serial : "?", s->cfg.tcp_addr, s->cfg.tcp_device_port, k);
             } else {
                 /* Hết STREAM_COUNT phiên LAN đang sống của thiết bị này → đi adb tunnel. */
+                g_message("phiên %s: hết %d slot stream LAN đang sống của thiết bị → adb tunnel",
+                          serial ? serial : "?", STREAM_COUNT);
                 g_free(s->tcp_owned);
                 s->tcp_owned = NULL;
                 s->cfg.transport = RC_TRANSPORT_USB;
@@ -196,7 +216,13 @@ void session_new(App *app, const char *serial, const char *tcp_addr) {
             g_free(s->tcp_owned);
             s->tcp_owned = withport;
             s->cfg.tcp_addr = s->tcp_owned;
+            g_message("phiên %s: thử LAN trực tiếp wireless — connect %s (connect == listen)",
+                      serial ? serial : "?", s->cfg.tcp_addr);
         }
+    } else {
+        g_message("phiên %s: đi adb tunnel ngay từ đầu (USB/emulator, hoặc agent không relay "
+                  "stream)",
+                  serial ? serial : "?");
     }
 
     s->client = rc_client_create(&s->cfg);
@@ -213,8 +239,7 @@ void session_new(App *app, const char *serial, const char *tcp_addr) {
 
     s->win = gtk_application_window_new(app->gtk);
     const char *tag = serial ? serial : (s->tcp_owned ? s->tcp_owned : "default");
-    g_snprintf(s->title_base, sizeof s->title_base, "RigControlNative — %s (đang kết nối…)",
-               tag);
+    g_snprintf(s->title_base, sizeof s->title_base, "RigControlNative — %s (đang kết nối…)", tag);
     gtk_window_set_title(GTK_WINDOW(s->win), s->title_base);
     s->title_timer = g_timeout_add(500, title_tick, s);
     gtk_window_set_default_size(GTK_WINDOW(s->win), 540, 960);

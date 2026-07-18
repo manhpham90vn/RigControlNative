@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 struct rc_decoder {
     AVCodecContext *ctx;
@@ -185,6 +186,12 @@ rc_status rc_decoder_feed(rc_decoder *d, const uint8_t *data, size_t len, int is
     (void)is_config; /* H.264 đọc SPS/PPS in-band; feed thẳng mọi packet */
     if (!d || !data || len == 0) return RC_ERR_INVALID_ARG;
 
+    /* Mốc đo trễ pipeline desktop (rc_frame.recv_ms): decode đồng bộ không B-frame nên frame
+     * ra thuộc đúng packet vừa vào — lấy giờ một lần cho cả batch. */
+    struct timespec ts_in;
+    clock_gettime(CLOCK_MONOTONIC, &ts_in);
+    int64_t recv_ms = (int64_t)ts_in.tv_sec * 1000 + ts_in.tv_nsec / 1000000;
+
     d->pkt->data = (uint8_t *)data;
     d->pkt->size = (int)len;
     d->pkt->pts = pts_us;
@@ -250,6 +257,7 @@ rc_status rc_decoder_feed(rc_decoder *d, const uint8_t *data, size_t len, int is
             int64_t pts = out->pts;
             if (pts == AV_NOPTS_VALUE) pts = out->best_effort_timestamp;
             f.pts_us = (pts == AV_NOPTS_VALUE) ? 0 : pts;
+            f.recv_ms = recv_ms;
             cb(&f, user);
         }
         av_frame_unref(d->frame);

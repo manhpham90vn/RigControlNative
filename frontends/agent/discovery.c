@@ -33,14 +33,12 @@ int g_discovery_port = DEFAULT_DISCOVERY_PORT;
 /* Bind pub_port trên MỌI IP đã chọn. is_discovery=1: cổng discovery (không dst/group).
  * Thành công nếu bind được ≥1 IP. Chỉ append (không sửa/xoá entry cũ) — giữ lock khi cập nhật
  * g_nls để vòng accept không đọc entry viết dở. */
-int add_listener(int pub_port, const char *dst_host, int dst_port, Group *group,
-                 int is_discovery) {
+int add_listener(int pub_port, const char *dst_host, int dst_port, Group *group, int is_discovery) {
     int made = 0;
     for (int i = 0; i < g_nbind; i++) {
         int fd = tcp_listen_addr(g_bind_ips[i], pub_port);
         if (fd < 0) {
-            fprintf(stderr, "✗ không bind được %s:%d (đang bị chiếm?)\n", g_bind_ips[i],
-                    pub_port);
+            logts("✗ không bind được %s:%d (đang bị chiếm?)", g_bind_ips[i], pub_port);
             continue;
         }
         pthread_mutex_lock(&g_lock);
@@ -72,14 +70,15 @@ static int establish_forwards(Slot *slot) {
         if (adb_forward(slot->serial, loc, g_tcpip_port) != 0 || !verify_guest_adb(loc)) {
             /* adbd trong guest chưa nghe TCP → bật rồi thử lại (tcpip restart adbd nên USB rớt
              * 1-2s rồi vào lại; forward phải tạo lại). */
+            logts("… %s: adbd guest chưa nghe TCP %d — chạy `adb tcpip` rồi thử lại", slot->serial,
+                  g_tcpip_port);
             char portstr[8];
             snprintf(portstr, sizeof portstr, "%d", g_tcpip_port);
             const char *tcpip_argv[] = {"adb", "-s", slot->serial, "tcpip", portstr, NULL};
             run_cmd(tcpip_argv, 15000, NULL, 0);
             sleep_ms(2000);
             if (adb_forward(slot->serial, loc, g_tcpip_port) != 0 || !verify_guest_adb(loc)) {
-                printf("✗ %s: không với tới adbd trong guest (tcp %d).\n", slot->serial,
-                       g_tcpip_port);
+                logts("✗ %s: không với tới adbd trong guest (tcp %d).", slot->serial, g_tcpip_port);
                 return -1;
             }
         }
@@ -89,7 +88,7 @@ static int establish_forwards(Slot *slot) {
         const char *colon = strrchr(slot->serial, ':');
         size_t n = colon ? (size_t)(colon - slot->serial) : 0;
         if (!colon || n == 0 || n >= sizeof slot->adb_dst_host) {
-            printf("✗ %s: serial wireless không hợp lệ.\n", slot->serial);
+            logts("✗ %s: serial wireless không hợp lệ.", slot->serial);
             return -1;
         }
         memcpy(slot->adb_dst_host, slot->serial, n);
@@ -101,12 +100,16 @@ static int establish_forwards(Slot *slot) {
         for (int k = 0; k < STREAM_COUNT; k++) {
             if (adb_forward(slot->serial, slot->stream_base + k + LOC_OFFSET, STREAM_BASE + k) !=
                 0) {
-                printf("… %s: stream forward k=%d thất bại — phiên sẽ đi adb tunnel.\n",
-                       slot->serial, k);
+                logts("… %s: stream forward k=%d thất bại — phiên sẽ đi adb tunnel.", slot->serial,
+                      k);
                 slot->stream_base = 0; /* bỏ relay stream cho slot này → discovery báo 0 */
                 break;
             }
         }
+        if (slot->stream_base)
+            logts("  %s: stream public %d-%d → cổng %d-%d trong thiết bị OK", slot->serial,
+                  slot->stream_base, slot->stream_base + STREAM_COUNT - 1, STREAM_BASE,
+                  STREAM_BASE + STREAM_COUNT - 1);
     }
     return 0;
 }
@@ -114,7 +117,7 @@ static int establish_forwards(Slot *slot) {
 /* Bind listener cho slot (gọi MỘT LẦN sau establish_forwards đầu tiên). Cổng adb + dải stream. */
 static int bind_listeners(Slot *slot) {
     if (add_listener(slot->adb_port, slot->adb_dst_host, slot->adb_dst_port, NULL, 0) != 0) {
-        printf("✗ %s: không bind được cổng adb %d.\n", slot->serial, slot->adb_port);
+        logts("✗ %s: không bind được cổng adb %d.", slot->serial, slot->adb_port);
         return -1;
     }
     if (slot->stream_base) {
@@ -133,23 +136,29 @@ static void slot_setup_new(Slot *slot) {
     pthread_mutex_lock(&g_lock);
     slot->ready = 1;
     pthread_mutex_unlock(&g_lock);
-    printf("✓ %s (%s) slot %d: adb %d, %s\n", slot->model[0] ? slot->model : slot->kind,
-           slot->serial, slot->idx, slot->adb_port,
-           slot->stream_base ? "stream LAN trực tiếp" : "stream qua adb tunnel");
+    logts("✓ %s (%s) slot %d: adb %d, %s", slot->model[0] ? slot->model : slot->kind, slot->serial,
+          slot->idx, slot->adb_port,
+          slot->stream_base ? "stream LAN trực tiếp" : "stream qua adb tunnel");
 }
 
 /* Sinh đáp ứng AGENT_PROTOCOL §1.2 và ghi ra socket. Đọc bảng slot dưới lock. */
 void discovery_write(int fd) {
     char buf[4096];
     int off = snprintf(buf, sizeof buf, "RCAGENT %d\n", AGENT_PROTOCOL_VERSION);
+    int listed = 0, hidden = 0;
     pthread_mutex_lock(&g_lock);
     for (int i = 0; i < g_nslots && off < (int)sizeof buf; i++) {
         Slot *s = &g_slots[i];
-        if (!s->present || !s->ready) continue;
+        if (!s->present || !s->ready) {
+            hidden++;
+            continue;
+        }
         off += snprintf(buf + off, sizeof buf - (size_t)off, "%d\t%s\t%s\t%s\t%d\n", s->adb_port,
                         s->kind, s->serial, s->model[0] ? s->model : "-", s->stream_base);
+        listed++;
     }
     pthread_mutex_unlock(&g_lock);
+    logts("discovery: trả %d thiết bị (%d slot vắng/chưa sẵn sàng)", listed, hidden);
     if (off > (int)sizeof buf) off = (int)sizeof buf;
     write_full(fd, buf, (size_t)off);
 }
@@ -170,7 +179,9 @@ void rescan_once(void) {
     int n = list_devices(devs, 64);
     if (n < 0) return;
 
-    /* Phase A: present = serial còn trong danh sách; phát hiện cắm lại (vắng→có). */
+    /* Phase A: present = serial còn trong danh sách; phát hiện cắm lại (vắng→có).
+     * Ghi nhận chuyển trạng thái dưới lock, log sau khi nhả (log không cần lock). */
+    int gone[MAX_SLOTS], ngone = 0, back[MAX_SLOTS], nback = 0;
     pthread_mutex_lock(&g_lock);
     for (int i = 0; i < g_nslots; i++) {
         int seen = 0;
@@ -179,10 +190,19 @@ void rescan_once(void) {
                 seen = 1;
                 break;
             }
-        if (seen && !g_slots[i].present && g_slots[i].ready) g_slots[i].reappeared = 1;
+        if (seen && !g_slots[i].present && g_slots[i].ready) {
+            g_slots[i].reappeared = 1;
+            back[nback++] = i;
+        }
+        if (!seen && g_slots[i].present) gone[ngone++] = i;
         g_slots[i].present = seen;
     }
     pthread_mutex_unlock(&g_lock);
+    for (int i = 0; i < ngone; i++)
+        logts("− %s biến mất khỏi `adb devices` — ẩn khỏi discovery tới khi quay lại",
+              g_slots[gone[i]].serial);
+    for (int i = 0; i < nback; i++)
+        logts("+ %s xuất hiện lại — refresh adb forward", g_slots[back[i]].serial);
 
     /* Phase B1: refresh forward cho slot vừa cắm lại (listener đã bind từ trước, giữ nguyên). */
     for (;;) {
@@ -196,7 +216,9 @@ void rescan_once(void) {
             }
         pthread_mutex_unlock(&g_lock);
         if (!slot) break;
-        establish_forwards(slot);
+        if (establish_forwards(slot) != 0)
+            logts("✗ %s: refresh forward sau khi cắm lại thất bại — stream sẽ đi adb tunnel",
+                  slot->serial);
     }
 
     /* Phase B2: thiết bị mới → cấp slot rồi dựng (không giữ lock khi chạy adb). */
@@ -211,15 +233,16 @@ void rescan_once(void) {
             g_slots_full_warned = 1;
             pthread_mutex_unlock(&g_lock);
             if (warn)
-                fprintf(stderr,
-                        "⚠ Đã đủ %d slot — bỏ qua thiết bị mới tới khi khởi động lại agent.\n",
-                        MAX_SLOTS);
+                logts("⚠ Đã đủ %d slot — bỏ qua thiết bị mới tới khi khởi động lại agent.",
+                      MAX_SLOTS);
             continue;
         }
         Slot *slot = &g_slots[g_nslots];
         memset(slot, 0, sizeof *slot);
-        snprintf(slot->serial, sizeof slot->serial, "%s", devs[j].serial);
-        snprintf(slot->model, sizeof slot->model, "%s", devs[j].model);
+        snprintf(slot->serial, sizeof slot->serial, "%.*s", (int)sizeof slot->serial - 1,
+                 devs[j].serial);
+        snprintf(slot->model, sizeof slot->model, "%.*s", (int)sizeof slot->model - 1,
+                 devs[j].model);
         slot->kind = dev_kind(slot->serial);
         slot->idx = g_nslots;
         slot->adb_port = g_adb_base + slot->idx;
@@ -232,6 +255,8 @@ void rescan_once(void) {
         slot->present = 1;
         g_nslots++;
         pthread_mutex_unlock(&g_lock);
+        logts("+ thiết bị mới %s (%s) → slot %d, dựng forward…", slot->serial, slot->kind,
+              slot->idx);
         slot_setup_new(slot);
     }
 }
@@ -239,7 +264,8 @@ void rescan_once(void) {
 void *rescan_thread(void *arg) {
     (void)arg;
     while (!g_stop) {
-        for (int slept = 0; slept < RESCAN_INTERVAL_MS && !g_stop; slept += 100) sleep_ms(100);
+        for (int slept = 0; slept < RESCAN_INTERVAL_MS && !g_stop; slept += 100)
+            sleep_ms(100);
         if (g_stop) break;
         rescan_once();
     }

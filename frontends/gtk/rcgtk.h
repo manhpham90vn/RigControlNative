@@ -74,6 +74,17 @@ typedef struct {
     int show_fps;
     atomic_int frame_count;
     guint fps_timer;
+
+    /* Đo trễ (ghép vào tiêu đề cùng FPS):
+     *   pipe = recv_ms (packet vào decoder) → frame upload lên GL, đo trễ pipeline desktop;
+     *   lag  = (giờ hiển thị − pts thiết bị) − min từ đầu phiên: hai đồng hồ khác nhau nên chỉ
+     *          HIỆU so với baseline mới có nghĩa — đo trễ TÍCH LUỸ (buffer mạng/encoder đầy).
+     * pend_* thuộc frame đang chờ upload (bảo vệ bởi lock); phần cộng dồn chỉ đụng trên UI
+     * thread (on_render ghi, fps_tick đọc + reset mỗi giây). */
+    int64_t pend_recv_ms, pend_pts_us;
+    int64_t lat_sum_ms, lag_sum_ms;
+    int lat_n;
+    int64_t lag_base_us;  /* min(now_us − pts_us); G_MAXINT64 = chưa có mẫu */
     guint title_timer;    /* poll đường stream thực tế từ core → cập nhật tiêu đề rồi tự dừng */
     char title_base[160]; /* "RigControlNative — <tag> (<đường stream>)"; fps_tick ghép thêm */
 
@@ -100,6 +111,9 @@ struct App {
     /* Thiết bị do rc-agent expose: khoá "<ip>:<adb_port>" (== serial adb) → AgentDev*.
      * chooser tra để gắn nhãn "(agent)"; session tra để cấp cổng stream theo thiết bị. */
     GHashTable *agent_devs;
+    /* Host đã dò cổng discovery (tự động hoặc quét tay) — mỗi host chỉ dò một lần mỗi lần chạy
+     * app, tránh probe lặp mỗi lần làm mới danh sách. Set: khoá = ip, value không dùng. */
+    GHashTable *probed_hosts;
 };
 
 /* render.c */

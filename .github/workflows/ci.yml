@@ -1,9 +1,15 @@
+<<<<<<< HEAD
+=======
+# CI: build toàn bộ (rc-server + libcore + GTK + rc-agent) trên Linux, rc-agent trên macOS.
+# Chạy cho mọi push lên main và mọi pull request.
+>>>>>>> 42bc9b07321123ecba6dc23a23ca3e7232ddb1f8
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+<<<<<<< HEAD
   workflow_dispatch:
 
 jobs:
@@ -69,3 +75,43 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang-format
       - name: Kiểm tra định dạng
         run: make format-check
+=======
+
+jobs:
+  linux:
+    name: Linux (core + GTK + agent + server)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cài dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config \
+            libavcodec-dev libavutil-dev libswresample-dev libasound2-dev \
+            libgtk-4-dev libepoxy-dev clang-format
+
+      # Runner Ubuntu có sẵn Android SDK (ANDROID_HOME) gồm platforms + build-tools;
+      # server/build.sh tự chọn android.jar và d8 mới nhất.
+      - name: Build rc-server (javac + d8)
+        run: make server
+
+      - name: Build libcore + GTK + rc-agent
+        run: make build
+
+      # clang-format mỗi bản format hơi khác nhau → chỉ cảnh báo, không chặn merge.
+      - name: Kiểm tra định dạng (chỉ cảnh báo)
+        continue-on-error: true
+        run: make format-check
+
+  macos-agent:
+    name: macOS (rc-agent)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # Makefile trên Darwin tự thêm -DRC_BUILD_GTK=OFF -DRC_BUILD_CORE=OFF.
+      - name: Build rc-agent
+        run: make agent
+>>>>>>> 42bc9b07321123ecba6dc23a23ca3e7232ddb1f8

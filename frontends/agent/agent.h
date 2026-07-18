@@ -33,7 +33,7 @@
 #define MAX_SLOTS 8                 /* adb 15553-15560, stream 27183-27214 */
 #define AGENT_PROTOCOL_VERSION 1    /* banner "RCAGENT <version>" (AGENT_PROTOCOL §1.2) */
 #define RESCAN_INTERVAL_MS 3000     /* chu kỳ quét lại adb devices trên thread nền */
-#define PRE_CAP 4096                /* dữ liệu client giữ lại để replay trước khi upstream xác nhận */
+#define PRE_CAP 4096 /* dữ liệu client giữ lại để replay trước khi upstream xác nhận */
 #define MAX_LISTENERS 128
 
 /* ---------- Relay engine (net.c) ---------- */
@@ -55,7 +55,8 @@ typedef struct {
 typedef struct {
     int fd; /* listen fd */
     int pub_port;
-    char dst_host[64]; /* đích relay: "127.0.0.1" (emu/USB, adb forward) hoặc ip từ serial (wireless) */
+    char dst_host[64]; /* đích relay: "127.0.0.1" (emu/USB, adb forward) hoặc ip từ serial
+                          (wireless) */
     int dst_port;
     Group *group;     /* NULL = relay trong suốt (cổng adb) */
     int is_discovery; /* 1 = cổng discovery: sinh đáp ứng tại chỗ, không relay */
@@ -66,6 +67,8 @@ typedef struct {
     char dst_host[64];
     int dst_port;
     Group *group;
+    int pub_port;  /* cổng public client đã connect vào (chỉ để log) */
+    char peer[46]; /* IP client (chỉ để log) */
 } Conn;
 
 /* ---------- Thiết bị + slot ---------- */
@@ -117,6 +120,8 @@ extern int g_discovery_port;
 /* ---------- util.c ---------- */
 int64_t now_ms(void);
 void sleep_ms(int ms);
+/* printf một dòng kèm timestamp HH:MM:SS.mmm — an toàn giữa các thread (một lần ghi/dòng). */
+void logts(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 /* Chạy lệnh con đồng bộ có timeout; out != NULL thì capture stdout. Trả 0 nếu exit code 0. */
 int run_cmd(const char *const argv[], int timeout_ms, char *out, size_t out_sz);
 int write_full(int fd, const void *buf, size_t len);

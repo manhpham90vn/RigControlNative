@@ -112,6 +112,10 @@ public final class ScreenEncoder {
                 throw new IOException("không tạo được encoder " + options.codec, e);
             }
             applyH264HighProfile(codec, format);
+            System.out.println("[rc-server] encoder " + codec.getName() + ": "
+                + format.getInteger(MediaFormat.KEY_BIT_RATE) + "bps CBR, "
+                + format.getInteger(MediaFormat.KEY_FRAME_RATE) + "fps, profile="
+                + (format.containsKey(MediaFormat.KEY_PROFILE) ? "High" : "mặc định"));
 
             Surface surface = null;
             IBinder display = null;

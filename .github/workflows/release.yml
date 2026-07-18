@@ -1,8 +1,16 @@
+<<<<<<< HEAD
+=======
+# Release: push tag `v*` (vd `git tag v0.1.0 && git push origin v0.1.0`) → build + đóng gói
+# + tạo GitHub Release kèm artifact:
+#   rigcontrol-<ver>-linux-x86_64.tar.gz   app GTK + rc-agent + rc-server (build Ubuntu 24.04)
+#   rc-agent-<ver>-macos-universal.tar.gz  rc-agent universal (arm64 + x86_64)
+>>>>>>> 42bc9b07321123ecba6dc23a23ca3e7232ddb1f8
 name: Release
 
 on:
   push:
     tags: ["v*"]
+<<<<<<< HEAD
   workflow_dispatch:
 
 permissions:
@@ -66,3 +74,163 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: RigControlNative-linux-x86_64.tar.gz
+=======
+
+permissions:
+  contents: write # tạo release + upload asset
+
+jobs:
+  linux:
+    name: Đóng gói Linux x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cài dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config nasm patchelf \
+            libva-dev libdrm-dev libdav1d-dev libasound2-dev \
+            libgtk-4-dev libepoxy-dev
+
+      # Không link FFmpeg của distro: soname đổi theo major (24.04 = .so.60, 26.04 = .so.62)
+      # nên binary chỉ chạy đúng trên distro cùng đời — và bundle lib distro thì phải kéo cả
+      # closure ~80 lib (cairo, pango, mọi codec...). Thay vào đó build FFmpeg tối giản chỉ
+      # gồm 4 decoder app dùng (h264/hevc/av1/opus, av1 software qua dav1d vì decoder av1
+      # native chỉ hwaccel) + hwaccel NVDEC/VAAPI (~4MB) rồi bundle vào tar.
+      - name: Build FFmpeg tối giản để bundle
+        run: |
+          set -o pipefail
+          FFVER=8.0
+          FFPREFIX="${GITHUB_WORKSPACE}/ffprefix"
+          # Header NVDEC (ffnvcodec) — chỉ header, runtime dlopen libcuda/libnvcuvid nếu có.
+          git clone --depth 1 https://git.videolan.org/git/ffmpeg/nv-codec-headers.git
+          make -C nv-codec-headers install PREFIX="${FFPREFIX}"
+          curl -sLO "https://ffmpeg.org/releases/ffmpeg-${FFVER}.tar.xz"
+          tar xf "ffmpeg-${FFVER}.tar.xz"
+          cd "ffmpeg-${FFVER}"
+          PKG_CONFIG_PATH="${FFPREFIX}/lib/pkgconfig" ./configure \
+            --prefix="${FFPREFIX}" \
+            --disable-all --disable-autodetect \
+            --enable-shared --disable-static \
+            --enable-avcodec --enable-swresample --enable-pthreads \
+            --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=opus \
+            --enable-decoder=av1 --enable-decoder=libdav1d --enable-libdav1d \
+            --enable-vaapi --enable-libdrm --enable-ffnvcodec \
+            --enable-hwaccel=h264_vaapi --enable-hwaccel=hevc_vaapi --enable-hwaccel=av1_vaapi \
+            --enable-hwaccel=h264_nvdec --enable-hwaccel=hevc_nvdec --enable-hwaccel=av1_nvdec \
+            2>&1 | tee configure.log
+          # Thiếu dependency thì configure chỉ WARNING rồi lặng lẽ bỏ hwaccel/decoder → chặn ở đây.
+          ! grep "WARNING: Disabled" configure.log
+          make -j"$(nproc)" install
+
+      - name: Build rc-server (javac + d8)
+        run: make server
+
+      - name: Build libcore + GTK + rc-agent
+        run: PKG_CONFIG_PATH="${GITHUB_WORKSPACE}/ffprefix/lib/pkgconfig" make build
+
+      # Bố cục giữ "server/rc-server" cạnh binary vì app mặc định tìm rc-server theo đường
+      # dẫn tương đối đó (đổi được qua RC_SERVER_PATH).
+      - name: Đóng gói
+        run: |
+          VER="${GITHUB_REF_NAME}"
+          PKG="rigcontrol-${VER}-linux-x86_64"
+          mkdir -p "dist/${PKG}/server" "dist/${PKG}/lib"
+          cp build/frontends/gtk/rigcontrol "dist/${PKG}/"
+          cp build/frontends/agent/rc-agent "dist/${PKG}/"
+          cp server/rc-server "dist/${PKG}/server/"
+          cp README.md "dist/${PKG}/"
+
+          # Bundle FFmpeg tối giản (file thật, tên theo soname). rpath $ORIGIN cho từng lib
+          # NGAY trước khi ldd, để libavcodec resolve libavutil... trong bundle chứ không
+          # vớ nhầm ffmpeg hệ thống (nếu có) rồi kéo cả closure distro vào danh sách copy.
+          for lib in libavcodec libavutil libswresample; do
+            cp -L "$(ls ffprefix/lib/${lib}.so.* | grep -E '\.so\.[0-9]+$')" "dist/${PKG}/lib/"
+          done
+          for f in "dist/${PKG}/lib/"*; do patchelf --set-rpath '$ORIGIN' "${f}"; done
+
+          # Copy thêm dependency ngoài glibc (libdav1d, libva, libva-drm, libdrm — ldd in
+          # cả closure đệ quy nên một lượt là đủ).
+          GLIBC='ld-linux|libc\.so|libm\.so|libmvec\.so|libpthread\.so|libdl\.so|librt\.so|libgcc_s\.so'
+          ldd "dist/${PKG}/lib/"*.so.* | awk '$3 ~ /^\// {print $3}' | sort -u \
+            | grep -Ev "${GLIBC}" | while read -r so; do
+            base="$(basename "${so}")"
+            [ -e "dist/${PKG}/lib/${base}" ] || cp -L "${so}" "dist/${PKG}/lib/"
+          done
+
+          # rpath cho binary + lượt hai cho lib mới copy (RUNPATH của binary không áp cho
+          # dependency gián tiếp: libavcodec → libdav1d, libva → libdrm). patchelf idempotent.
+          patchelf --set-rpath '$ORIGIN/lib' "dist/${PKG}/rigcontrol"
+          for f in "dist/${PKG}/lib/"*; do patchelf --set-rpath '$ORIGIN' "${f}"; done
+          ls -la "dist/${PKG}/lib"
+
+          tar -C dist -czf "${PKG}.tar.gz" "${PKG}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: rigcontrol-*-linux-x86_64.tar.gz
+
+  macos-agent:
+    name: Đóng gói rc-agent macOS (universal)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # rc-agent là C thuần POSIX, không dependency → build universal một phát bằng
+      # CMAKE_OSX_ARCHITECTURES (không cần hai runner).
+      - name: Build rc-agent universal
+        run: |
+          cmake -B build -DRC_BUILD_GTK=OFF -DRC_BUILD_CORE=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          cmake --build build --target rc-agent
+          lipo -info build/frontends/agent/rc-agent
+
+      - name: Đóng gói
+        run: |
+          VER="${GITHUB_REF_NAME}"
+          PKG="rc-agent-${VER}-macos-universal"
+          mkdir -p "dist/${PKG}"
+          cp build/frontends/agent/rc-agent "dist/${PKG}/"
+          tar -C dist -czf "${PKG}.tar.gz" "${PKG}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: rc-agent-*-macos-universal.tar.gz
+
+  release:
+    name: Tạo GitHub Release
+    needs: [linux, macos-agent]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: "*.tar.gz"
+          generate_release_notes: true
+          body: |
+            ## Cài đặt nhanh
+
+            **Ubuntu 24.04+ (desktop):** tải `rigcontrol-*-linux-x86_64.tar.gz`, giải nén, cài
+            runtime rồi chạy từ thư mục giải nén (app tìm `server/rc-server` cạnh binary;
+            FFmpeg đã bundle sẵn trong `lib/`):
+
+            ```bash
+            sudo apt install libgtk-4-1 libepoxy0 libasound2t64 adb
+            tar xzf rigcontrol-*-linux-x86_64.tar.gz && cd rigcontrol-*/
+            ./rigcontrol
+            ```
+
+            **macOS (máy cắm thiết bị, chạy agent):** tải `rc-agent-*-macos-universal.tar.gz`,
+            giải nén và chạy `./rc-agent` (cần `adb` trong PATH — `brew install --cask
+            android-platform-tools`).
+
+            Hướng dẫn đầy đủ trong README của repo.
+>>>>>>> 42bc9b07321123ecba6dc23a23ca3e7232ddb1f8

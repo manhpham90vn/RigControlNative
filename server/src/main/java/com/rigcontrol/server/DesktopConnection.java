@@ -54,17 +54,17 @@ public final class DesktopConnection implements Closeable {
         System.out.println("[rc-server] listen TCP 0.0.0.0:" + options.port
             + (options.token != null ? " (yêu cầu token)" : ""));
 
-        Socket video = acceptAuthed(options);
+        Socket video = acceptAuthed(options, "video");
         register(video);
         videoOut = video.getOutputStream();
 
         if (options.audio) {
-            Socket audio = acceptAuthed(options);
+            Socket audio = acceptAuthed(options, "audio");
             register(audio);
             audioOut = audio.getOutputStream();
         }
         if (options.control) {
-            Socket control = acceptAuthed(options);
+            Socket control = acceptAuthed(options, "control");
             register(control);
             controlIn = control.getInputStream();
             controlOut = control.getOutputStream();
@@ -77,10 +77,12 @@ public final class DesktopConnection implements Closeable {
      * cho cả mạng nên đây là hàng rào chống bên lạ chiếm stream/inject input. Kết nối sai
      * token (hoặc im lặng quá 5s) bị đóng và server accept tiếp.
      */
-    private Socket acceptAuthed(Options options) throws IOException {
+    private Socket acceptAuthed(Options options, String what) throws IOException {
         while (true) {
             Socket s = serverSocket.accept();
             if (options.token == null) {
+                System.out.println(
+                    "[rc-server] accept " + what + " từ " + s.getRemoteSocketAddress());
                 return s;
             }
             try {
@@ -99,11 +101,15 @@ public final class DesktopConnection implements Closeable {
                     && java.security.MessageDigest.isEqual(
                         buf, options.token.getBytes("US-ASCII"))) {
                     s.setSoTimeout(0);
+                    System.out.println("[rc-server] accept " + what + " từ "
+                        + s.getRemoteSocketAddress() + " (token OK)");
                     return s;
                 }
-                System.err.println("[rc-server] kết nối TCP sai token — đóng");
+                System.err.println("[rc-server] kết nối TCP " + what + " từ "
+                    + s.getRemoteSocketAddress() + " sai token — đóng");
             } catch (IOException e) {
-                System.err.println("[rc-server] lỗi đọc token: " + e);
+                System.err.println("[rc-server] lỗi đọc token (" + what + " từ "
+                    + s.getRemoteSocketAddress() + "): " + e);
             }
             try {
                 s.close();
