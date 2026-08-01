@@ -31,7 +31,12 @@ all: server build ## Build server (dex) + core + front-end
 
 .PHONY: configure
 configure: ## Cấu hình CMake (sinh compile_commands.json)
-	cmake -B $(BUILD_DIR) -G "$(GENERATOR)" $(CMAKE_FLAGS)
+	@# Nếu build dir đã có cache thì giữ generator cũ (bỏ -G) để tránh lỗi lệch generator.
+	@if [ -f $(BUILD_DIR)/CMakeCache.txt ]; then \
+		cmake -B $(BUILD_DIR) $(CMAKE_FLAGS); \
+	else \
+		cmake -B $(BUILD_DIR) -G "$(GENERATOR)" $(CMAKE_FLAGS); \
+	fi
 
 .PHONY: build
 build: configure ## Build core + front-end (C)
@@ -117,8 +122,11 @@ lint: configure ## Lint C bằng clang-tidy; fallback build -Werror nếu thiế
 
 .PHONY: lint-strict
 lint-strict: ## Build core với -Werror để bắt cảnh báo
-	cmake -B $(BUILD_DIR)-strict -G "$(GENERATOR)" $(CMAKE_FLAGS) \
-		-DCMAKE_C_FLAGS="-Wall -Wextra -Werror"
+	@if [ -f $(BUILD_DIR)-strict/CMakeCache.txt ]; then \
+		cmake -B $(BUILD_DIR)-strict $(CMAKE_FLAGS) -DCMAKE_C_FLAGS="-Wall -Wextra -Werror"; \
+	else \
+		cmake -B $(BUILD_DIR)-strict -G "$(GENERATOR)" $(CMAKE_FLAGS) -DCMAKE_C_FLAGS="-Wall -Wextra -Werror"; \
+	fi
 	cmake --build $(BUILD_DIR)-strict --target rccore
 
 # ---- Dọn dẹp ----

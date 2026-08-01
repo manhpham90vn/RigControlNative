@@ -13,6 +13,7 @@ endif()
 
 add_executable(rigcontrol
     main.c
+    adbpath.c
     chooser.c
     session.c
     render.c

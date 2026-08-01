@@ -13,6 +13,7 @@
  *   RC_SHOW_FPS   0/1 (mặc định 1) — overlay FPS trên video
  *   RC_HWDEC      off/0/no/sw → ép software decode (libcore đọc; mặc định thử hw trước)
  *   RC_SERVER_PATH  đường dẫn jar server (libcore đọc; mặc định "server/rc-server")
+ *   RC_ADB_PATH   đường dẫn adb (hoặc thư mục chứa nó); mặc định dò PATH + vị trí SDK thường gặp
  */
 #include "rcgtk.h"
 
@@ -42,6 +43,9 @@ static int env_int(const char *name, int def) {
 }
 
 int main(int argc, char **argv) {
+    /* Trước mọi thứ khác: chốt adb + vá PATH (sửa environ) khi chưa có thread nào chạy. */
+    adb_path_init();
+
     const char *tcp = g_getenv("RC_TCP_ADDR");
     App app;
     memset(&app, 0, sizeof app);

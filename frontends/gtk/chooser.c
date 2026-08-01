@@ -45,10 +45,17 @@ static const char *conn_label(App *app, const char *serial) {
     return "USB";
 }
 
-/* Chạy `adb devices -l`, trả mảng DevInfo* (chỉ máy trạng thái "device"). */
+/* Chạy `adb devices -l`, trả mảng DevInfo* (chỉ máy trạng thái "device"). KHÔNG nuốt stderr —
+ * lỗi adb (không chạy được, server version lệch) phải thấy được ở terminal thay vì biến thành
+ * "không có thiết bị". */
 static GPtrArray *list_adb_devices(void) {
     GPtrArray *arr = g_ptr_array_new_with_free_func(g_free);
-    FILE *fp = popen("adb devices -l 2>/dev/null", "r");
+    if (!adb_available()) return arr; /* nhãn rỗng ở populate_devices nói rõ vì sao */
+    char *quoted = g_shell_quote(adb_program());
+    char *cmd = g_strconcat(quoted, " devices -l", NULL);
+    FILE *fp = popen(cmd, "r");
+    g_free(quoted);
+    g_free(cmd);
     if (!fp) return arr;
     char line[512];
     gboolean first = TRUE;
@@ -79,8 +86,14 @@ static void populate_devices(App *app, GtkListBox *list) {
 
     GPtrArray *devs = list_adb_devices();
     if (devs->len == 0) {
-        GtkWidget *lbl =
-            gtk_label_new("Không thấy thiết bị. Cắm máy / bật USB debugging, hoặc quét agent.");
+        /* Phân biệt "không có máy nào" với "không chạy được adb" — hai thứ này cần cách xử lý
+         * hoàn toàn khác, gộp một câu thì người dùng đi tìm nhầm chỗ. */
+        GtkWidget *lbl = gtk_label_new(
+            adb_available()
+                ? "Không thấy thiết bị. Cắm máy / bật USB debugging, hoặc quét agent."
+                : "Không tìm thấy `adb`. Cài Android platform-tools, mở app từ terminal có adb, "
+                  "hoặc đặt RC_ADB_PATH=/đường/dẫn/tới/adb.");
+        gtk_label_set_wrap(GTK_LABEL(lbl), TRUE);
         gtk_widget_set_margin_top(lbl, 16);
         gtk_widget_set_margin_bottom(lbl, 16);
         gtk_list_box_append(list, lbl);
@@ -306,19 +319,27 @@ static gpointer agent_scan_thread(gpointer data) {
 
     for (guint i = 0; i < devs->len; i++) {
         AgentDev *ad = devs->pdata[i];
-        const char *connect_argv[] = {"adb", "connect", ad->serial, NULL};
-        const char *state_argv[] = {"adb", "-s", ad->serial, "get-state", NULL};
+        const char *connect_argv[] = {adb_program(), "connect", ad->serial, NULL};
+        const char *state_argv[] = {adb_program(), "-s", ad->serial, "get-state", NULL};
         if (adb_run(connect_argv, 10000) && adb_run(state_argv, 5000))
             g_ptr_array_add(ctx->ok_devs, g_memdup2(ad, sizeof *ad));
     }
     guint total = devs->len, ok = ctx->ok_devs->len;
     g_ptr_array_free(devs, TRUE);
 
-    ctx->msg =
-        ok ? g_strdup_printf("Agent %s: nối được %u/%u thiết bị — bấm để mở.", ctx->ip, ok, total)
-           : g_strdup_printf("Agent %s: %u thiết bị nhưng không nối được máy nào "
-                             "(kiểm tra adb / mạng).",
-                             ctx->ip, total);
+    /* Quét được mà không nối được máy nào: nếu app không chạy nổi adb thì nói thẳng ra, đừng
+     * đẩy người dùng đi soi mạng — cổng discovery vừa trả lời nên mạng rõ ràng thông. */
+    if (ok)
+        ctx->msg =
+            g_strdup_printf("Agent %s: nối được %u/%u thiết bị — bấm để mở.", ctx->ip, ok, total);
+    else if (!adb_available())
+        ctx->msg = g_strdup_printf("Agent %s: thấy %u thiết bị nhưng máy này không chạy được "
+                                   "`adb`. Cài platform-tools hoặc đặt RC_ADB_PATH.",
+                                   ctx->ip, total);
+    else
+        ctx->msg = g_strdup_printf("Agent %s: %u thiết bị nhưng không nối được máy nào "
+                                   "(kiểm tra adb / mạng).",
+                                   ctx->ip, total);
     g_idle_add(agent_scan_done, ctx);
     return NULL;
 }

@@ -1,6 +1,7 @@
 /*
  * rcgtk.h — cấu trúc App/Session + API giữa các module của front-end GTK4:
  *   main.c    entry point, đọc cấu hình env, activate
+ *   adbpath.c dò `adb` lúc khởi động + vá $PATH (app mở từ icon không có PATH của shell)
  *   chooser.c màn chọn thiết bị (adb devices, wireless adb, dropdown cấu hình)
  *   session.c vòng đời một phiên mirror (cửa sổ, rc_client, teardown)
  *   render.c  GtkGLArea + shader YUV→RGB, marshal frame từ thread core về UI
@@ -141,5 +142,12 @@ void session_free(gpointer data);
 
 /* chooser.c */
 void chooser_show(App *app);
+
+/* adbpath.c */
+/* Dò adb (RC_ADB_PATH → PATH → vị trí SDK thường gặp) và đưa thư mục chứa nó lên đầu $PATH để
+ * libcore spawn được. Gọi MỘT LẦN ở main, trước khi tạo thread — setenv không thread-safe. */
+void adb_path_init(void);
+gboolean adb_available(void);  /* FALSE = không có adb ở đâu cả → mọi thao tác adb sẽ hỏng */
+const char *adb_program(void); /* đường dẫn tuyệt đối; "adb" nếu chưa dò ra (để lỗi tự lộ) */
 
 #endif /* RCGTK_H */
