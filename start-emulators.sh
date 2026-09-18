@@ -25,8 +25,11 @@ LOG_DIR="$HOME/.emulator-logs"
 
 # "AVD:console_port:cores:mem_MB"   -> ADB port = console+1
 EMULATORS=(
-  "Resizable_Experimental:5552:4:6144"       # 4 core / 6 GB
-  "Resizable_Experimental_2:5554:3:5120"     # 3 core / 5 GB
+  "Resizable_Experimental:5552:2:2048"       # 2 core / 2 GB
+  "Resizable_Experimental_2:5554:2:2048"     # 2 core / 2 GB
+  "Resizable_Experimental_3:5556:2:2048"     # 2 core / 2 GB
+  "Resizable_Experimental_4:5558:2:2048"     # 2 core / 2 GB
+  "Resizable_Experimental_5:5560:2:2048"     # 2 core / 2 GB
 )
 
 GPU="host"          # máy có màn hình -> "host"; server headless -> "swiftshader_indirect"
